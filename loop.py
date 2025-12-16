@@ -213,20 +213,20 @@ def main() -> int:
         ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         iter_log = args.logdir / branch_target.replace('/', '-') / "ralph" / f"iter-{itnum:05d}_{ts}_{args.prompt}.log"
 
-        # Resume mode: if a local stamped handoff exists but isn't pushed yet, publish and skip work
-        st_local = OrchestrationState.read(str(args.state_file))
-        if (st_local.expected_actor != "ralph" or st_local.status in {"complete", "failed"}) and has_unpushed_commits():
-            def logp(msg: str) -> None:
-                iter_log.parent.mkdir(parents=True, exist_ok=True)
-                with open(iter_log, "a", encoding="utf-8") as f:
-                    f.write(msg + "\n")
-            logp("[sync] Detected local stamped handoff with unpushed commits; attempting push-only reconciliation.")
-            if not push_with_rebase(branch_target, logp):
-                print("[sync] ERROR: failed to push local stamped handoff; resolve and retry.")
-                return 1
-            continue
-
         if args.sync_via_git:
+            # Resume mode: if a local stamped handoff exists but isn't pushed yet, publish and skip work
+            st_local = OrchestrationState.read(str(args.state_file))
+            if (st_local.expected_actor != "ralph" or st_local.status in {"complete", "failed"}) and has_unpushed_commits():
+                def logp(msg: str) -> None:
+                    iter_log.parent.mkdir(parents=True, exist_ok=True)
+                    with open(iter_log, "a", encoding="utf-8") as f:
+                        f.write(msg + "\n")
+                logp("[sync] Detected local stamped handoff with unpushed commits; attempting push-only reconciliation.")
+                if not push_with_rebase(branch_target, logp):
+                    print("[sync] ERROR: failed to push local stamped handoff; resolve and retry.")
+                    return 1
+                continue
+
             args.state_file.parent.mkdir(parents=True, exist_ok=True)
             # Logger bound to this iteration
             def logp(msg: str) -> None:
