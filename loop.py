@@ -189,14 +189,14 @@ def main() -> int:
 
     # (reports auto-commit now shared via autocommit.autocommit_reports)
 
-    # Branch guard / resolution
+    # Branch guard / resolution (skip all git queries if --no-git)
     if args.no_git:
         branch_target = "local"
     elif args.branch:
         assert_on_branch(args.branch, lambda m: None)
         branch_target = args.branch
     else:
-        branch_target = current_branch()
+        branch_target = current_branch() or "local"
 
     # Always keep up to date (unless --no-git)
     if not args.no_git:
