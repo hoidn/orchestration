@@ -8,8 +8,6 @@ import time
 from datetime import datetime
 from pathlib import Path, PurePath
 from subprocess import Popen, PIPE
-import shlex
-
 from .state import OrchestrationState
 from .git_bus import safe_pull, add, commit, push_to, short_head, has_unpushed_commits, assert_on_branch, current_branch, push_with_rebase
 from .autocommit import autocommit_reports
@@ -31,26 +29,66 @@ def _log_file(prefix: str) -> Path:
 
 
 def tee_run(cmd: list[str], stdin_file: Path | None, log_path: Path) -> int:
-    fin = open(stdin_file, "rb") if stdin_file else None
+    """Run command with output tee'd to log file using non-blocking I/O."""
+    import select
+
+    fin = open(stdin_file, "rb") if stdin_file else open("/dev/null", "rb")
     try:
         with open(log_path, "a", encoding="utf-8") as flog:
             flog.write(f"$ {' '.join(cmd)}\n")
             flog.flush()
-            proc = Popen(cmd, stdin=fin, stdout=PIPE, stderr=PIPE, text=True, bufsize=1)
+
+            # Use unbuffered binary mode for real-time streaming
+            proc = Popen(cmd, stdin=fin, stdout=PIPE, stderr=PIPE, bufsize=0)
+
+            stdout_fd = proc.stdout.fileno() if proc.stdout else -1
+            stderr_fd = proc.stderr.fileno() if proc.stderr else -1
+
             while True:
-                line = proc.stdout.readline() if proc.stdout else ""
-                if not line:
+                readable, _, _ = select.select(
+                    [fd for fd in [stdout_fd, stderr_fd] if fd >= 0],
+                    [], [], 0.1
+                )
+
+                if stdout_fd in readable and proc.stdout:
+                    chunk = proc.stdout.read(4096)
+                    if chunk:
+                        text = chunk.decode("utf-8", errors="replace")
+                        sys.stdout.write(text)
+                        sys.stdout.flush()
+                        flog.write(text)
+                        flog.flush()
+
+                if stderr_fd in readable and proc.stderr:
+                    chunk = proc.stderr.read(4096)
+                    if chunk:
+                        text = chunk.decode("utf-8", errors="replace")
+                        sys.stderr.write(text)
+                        sys.stderr.flush()
+                        flog.write(text)
+                        flog.flush()
+
+                if proc.poll() is not None:
+                    # Drain remaining output
+                    if proc.stdout:
+                        remaining = proc.stdout.read()
+                        if remaining:
+                            text = remaining.decode("utf-8", errors="replace")
+                            sys.stdout.write(text)
+                            sys.stdout.flush()
+                            flog.write(text)
+                    if proc.stderr:
+                        remaining = proc.stderr.read()
+                        if remaining:
+                            text = remaining.decode("utf-8", errors="replace")
+                            sys.stderr.write(text)
+                            sys.stderr.flush()
+                            flog.write(text)
                     break
-                sys.stdout.write(line)
-                flog.write(line)
-            err = proc.stderr.read() if proc.stderr else ""
-            if err:
-                sys.stderr.write(err)
-                flog.write(err)
-            return proc.wait()
+
+            return proc.returncode
     finally:
-        if fin:
-            fin.close()
+        fin.close()
 
 
 def main() -> int:
@@ -287,22 +325,7 @@ def main() -> int:
             logp(f"ERROR: {e}")
             print(f"[sync] ERROR: {e}")
             return 2
-        script_bin = shutil.which("script")
-        if script_bin:
-            cmd_str = shlex.join(cmd)
-            script_cmd = [
-                script_bin,
-                "-q",
-                "-c",
-                f"cat {shlex.quote(str(prompt_path))} | {cmd_str}",
-                "/dev/null",
-            ]
-            run_cmd = script_cmd
-            stdin_arg = None
-        else:
-            run_cmd = cmd
-            stdin_arg = prompt_path
-        rc = tee_run(run_cmd, stdin_arg, iter_log)
+        rc = tee_run(cmd, prompt_path, iter_log)
 
         # Auto-commit reports evidence (before stamping) — constrained by extension and size caps
         if args.auto_commit_reports:

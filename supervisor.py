@@ -8,7 +8,6 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path, PurePath
 from subprocess import Popen, PIPE
-import shlex
 import shutil
 
 from .state import OrchestrationState
@@ -40,6 +39,8 @@ def tee_run(cmd: list[str], stdin_file: Path | None, log_path: Path) -> int:
         stdin_file: File to use as stdin, or None to use /dev/null
         log_path: Path to log file for output
     """
+    import select
+
     with open(log_path, "a", encoding="utf-8") as flog:
         flog.write(f"$ {' '.join(cmd)}\n")
         flog.flush()
@@ -51,20 +52,58 @@ def tee_run(cmd: list[str], stdin_file: Path | None, log_path: Path) -> int:
             fin = open("/dev/null", "rb")
 
         try:
-            proc = Popen(cmd, stdin=fin, stdout=PIPE, stderr=PIPE, text=True, bufsize=1)
-            # Stream stdout
+            # Use unbuffered binary mode for real-time streaming
+            proc = Popen(cmd, stdin=fin, stdout=PIPE, stderr=PIPE, bufsize=0)
+
+            # Non-blocking read loop using select
+            stdout_fd = proc.stdout.fileno() if proc.stdout else -1
+            stderr_fd = proc.stderr.fileno() if proc.stderr else -1
+
             while True:
-                line = proc.stdout.readline() if proc.stdout else ""
-                if not line:
+                # Wait for data on stdout or stderr
+                readable, _, _ = select.select(
+                    [fd for fd in [stdout_fd, stderr_fd] if fd >= 0],
+                    [], [], 0.1
+                )
+
+                if stdout_fd in readable and proc.stdout:
+                    chunk = proc.stdout.read(4096)
+                    if chunk:
+                        text = chunk.decode("utf-8", errors="replace")
+                        sys.stdout.write(text)
+                        sys.stdout.flush()
+                        flog.write(text)
+                        flog.flush()
+
+                if stderr_fd in readable and proc.stderr:
+                    chunk = proc.stderr.read(4096)
+                    if chunk:
+                        text = chunk.decode("utf-8", errors="replace")
+                        sys.stderr.write(text)
+                        sys.stderr.flush()
+                        flog.write(text)
+                        flog.flush()
+
+                # Check if process has ended
+                if proc.poll() is not None:
+                    # Drain remaining output
+                    if proc.stdout:
+                        remaining = proc.stdout.read()
+                        if remaining:
+                            text = remaining.decode("utf-8", errors="replace")
+                            sys.stdout.write(text)
+                            sys.stdout.flush()
+                            flog.write(text)
+                    if proc.stderr:
+                        remaining = proc.stderr.read()
+                        if remaining:
+                            text = remaining.decode("utf-8", errors="replace")
+                            sys.stderr.write(text)
+                            sys.stderr.flush()
+                            flog.write(text)
                     break
-                sys.stdout.write(line)
-                flog.write(line)
-            # Stream remaining stderr
-            err = proc.stderr.read() if proc.stderr else ""
-            if err:
-                sys.stderr.write(err)
-                flog.write(err)
-            return proc.wait()
+
+            return proc.returncode
         finally:
             fin.close()
 
@@ -471,19 +510,7 @@ def main() -> int:
                     f.write(f"ERROR: {e}\n")
                 print(f"[supervisor] ERROR: {e}")
                 return 2
-            script_bin = shutil.which("script")
-            if script_bin:
-                cmd_str = shlex.join(cmd)
-                script_cmd = [
-                    script_bin,
-                    "-q",
-                    "-c",
-                    f"cat {shlex.quote(str(prompt_file))} | {cmd_str}",
-                    "/dev/null",
-                ]
-                rc = tee_run(script_cmd, None, iter_log_path)
-            else:
-                rc = tee_run(cmd, prompt_file, iter_log_path)
+            rc = tee_run(cmd, prompt_file, iter_log_path)
             if rc != 0:
                 return rc
         return 0
@@ -594,7 +621,7 @@ def main() -> int:
         commit(f"[SYNC i={st.iteration}] actor=galph status=running")
         push_to(branch_target, logp)
 
-        # Execute one supervisor iteration (wrap with script(1) when available to preserve PTY behaviour)
+        # Execute one supervisor iteration
         try:
             cmd = _resolve_cmd()
         except RuntimeError as e:
@@ -602,23 +629,7 @@ def main() -> int:
             print(f"[sync] ERROR: {e}")
             return 2
 
-        script_bin = shutil.which("script")
-        if script_bin:
-            # When using script wrapper, pipe file content into the command
-            # (script wrapper needs stdin to come from within the -c command)
-            cmd_str = shlex.join(cmd)
-            script_cmd = [
-                script_bin,
-                "-q",
-                "-c",
-                f"cat {shlex.quote(str(prompt_file))} | {cmd_str}",
-                "/dev/null",
-            ]
-            # Pass None for stdin since cat will provide it
-            rc = tee_run(script_cmd, None, iter_log)
-        else:
-            # Without script wrapper, use stdin as before
-            rc = tee_run(cmd, prompt_file, iter_log)
+        rc = tee_run(cmd, prompt_file, iter_log)
 
         sha = short_head()
 
