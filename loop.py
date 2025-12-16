@@ -34,6 +34,7 @@ def tee_run(cmd: list[str], stdin_file: Path | None, log_path: Path) -> int:
 
     fin = open(stdin_file, "rb") if stdin_file else open("/dev/null", "rb")
     try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
         with open(log_path, "a", encoding="utf-8") as flog:
             flog.write(f"$ {' '.join(cmd)}\n")
             flog.flush()
