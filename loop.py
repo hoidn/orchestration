@@ -105,7 +105,8 @@ def main() -> int:
     ap.add_argument("--codex-cmd", type=str, default=os.getenv("CODEX_CMD", "codex"))
     ap.add_argument("--agent", type=str, choices=["auto", "claude", "codex"], default=os.getenv("LOOP_AGENT", "auto"),
                     help="Model CLI used for engineer loops (auto: prefer Claude, fallback Codex).")
-    ap.add_argument("--prompt", type=str, choices=["main", "debug"], default=os.getenv("LOOP_PROMPT", "main"), help="Select which prompt to run (default: main)")
+    ap.add_argument("--prompt", type=str, default=os.getenv("LOOP_PROMPT", "main"),
+                    help="Prompt file name (without path), e.g. 'spec_writer' or 'main' (default: main)")
     ap.add_argument("--branch", type=str, default=os.getenv("ORCHESTRATION_BRANCH", ""))
     ap.add_argument("--logdir", type=Path, default=Path("logs"), help="Base directory for per-iteration logs (default: logs/)")
     # Reports auto-commit (engineer evidence publishing)
@@ -255,7 +256,8 @@ def main() -> int:
             push_to(branch_target, logp)
 
         # Execute one engineer loop
-        prompt_path = cfg.prompts_dir / f"{args.prompt}.md"
+        prompt_name = args.prompt if args.prompt.endswith(".md") else f"{args.prompt}.md"
+        prompt_path = cfg.prompts_dir / prompt_name
         if not prompt_path.exists():
             logp(f"ERROR: prompt file not found: {prompt_path}")
             return 2
