@@ -97,6 +97,7 @@ def main() -> int:
 
     ap = argparse.ArgumentParser(description="Engineer (ralph) orchestrator")
     ap.add_argument("--sync-via-git", action="store_true", help="Enable cross-machine synchronous mode via Git state")
+    ap.add_argument("--no-git", action="store_true", help="Disable all git operations (for local-only runs like spec bootstrap)")
     ap.add_argument("--sync-loops", type=int, default=int(os.getenv("SYNC_LOOPS", 20)))
     ap.add_argument("--poll-interval", type=int, default=int(os.getenv("POLL_INTERVAL", 5)))
     ap.add_argument("--max-wait-sec", type=int, default=int(os.getenv("MAX_WAIT_SEC", 0)))
@@ -189,29 +190,31 @@ def main() -> int:
     # (reports auto-commit now shared via autocommit.autocommit_reports)
 
     # Branch guard / resolution
-    if args.branch:
+    if args.no_git:
+        branch_target = "local"
+    elif args.branch:
         assert_on_branch(args.branch, lambda m: None)
         branch_target = args.branch
     else:
         branch_target = current_branch()
 
-    # Always keep up to date
-    ok_initial = _pull_with_error(logp, "initial")
-    if not ok_initial:
-        print("[sync] ERROR: git pull failed; see iter log for details (likely untracked-file collisions).")
-        print("[sync] Remediation: move or remove the conflicting untracked files, then re-run the loop.")
-        return 1
+    # Always keep up to date (unless --no-git)
+    if not args.no_git:
+        ok_initial = _pull_with_error(logp, "initial")
+        if not ok_initial:
+            print("[sync] ERROR: git pull failed; see iter log for details (likely untracked-file collisions).")
+            print("[sync] Remediation: move or remove the conflicting untracked files, then re-run the loop.")
+            return 1
 
     for _ in range(args.sync_loops):
         # Compute per-iteration log path (branch/prompt aware)
-        ok_probe = _pull_with_error(lambda m: None, "probe")
-        if not ok_probe:
-            # Error line already printed
-            return 1
-        st_probe = OrchestrationState.read(str(args.state_file))
-        itnum = st_probe.iteration
-        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        iter_log = args.logdir / branch_target.replace('/', '-') / "ralph" / f"iter-{itnum:05d}_{ts}_{args.prompt}.log"
+        if not args.no_git:
+            ok_probe = _pull_with_error(lambda m: None, "probe")
+            if not ok_probe:
+                # Error line already printed
+                return 1
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        iter_log = args.logdir / branch_target.replace('/', '-') / "ralph" / f"iter-{ts}_{args.prompt}.log"
 
         if args.sync_via_git:
             # Resume mode: if a local stamped handoff exists but isn't pushed yet, publish and skip work
@@ -330,7 +333,7 @@ def main() -> int:
         rc = tee_run(cmd, prompt_path, iter_log)
 
         # Auto-commit reports evidence (before stamping) — constrained by extension and size caps
-        if args.auto_commit_reports:
+        if args.auto_commit_reports and not args.no_git:
             allowed = {e.strip().lower() for e in args.report_extensions.split(',') if e.strip()}
             autocommit_reports(
                 allowed_extensions=allowed,
@@ -343,11 +346,10 @@ def main() -> int:
                 allowed_path_globs=report_path_globs,
             )
 
-        # Complete handoff (stamp-first, idempotent)
-        sha = short_head()
-        st = OrchestrationState.read(str(args.state_file))
-
+        # Complete handoff (stamp-first, idempotent) — only in sync mode
         if args.sync_via_git:
+            sha = short_head()
+            st = OrchestrationState.read(str(args.state_file))
             # STAMP FIRST (idempotent)
             if rc == 0:
                 st.stamp(expected_actor="galph", status="complete", increment=True, ralph_commit=sha)
@@ -368,8 +370,8 @@ def main() -> int:
                 logp(f"Loop failed rc={rc}. Stamped failure and pushed; exiting.")
                 return rc
 
-        # Optional: push local commits from the loop (async hygiene)
-        if rc == 0 and has_unpushed_commits():
+        # Optional: push local commits from the loop (async hygiene) — skip if --no-git
+        if not args.no_git and rc == 0 and has_unpushed_commits():
             try:
                 push_to(branch_target, logp)
             except Exception as e:

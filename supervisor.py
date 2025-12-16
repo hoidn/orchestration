@@ -114,6 +114,7 @@ def main() -> int:
 
     ap = argparse.ArgumentParser(description="Supervisor (galph) orchestrator")
     ap.add_argument("--sync-via-git", action="store_true", help="Enable cross-machine synchronous mode via Git state")
+    ap.add_argument("--no-git", action="store_true", help="Disable all git operations (for local-only runs like spec bootstrap)")
     ap.add_argument("--sync-loops", type=int, default=int(os.getenv("SYNC_LOOPS", 20)), help="Number of iterations to run")
     ap.add_argument("--poll-interval", type=int, default=int(os.getenv("POLL_INTERVAL", 5)))
     ap.add_argument("--max-wait-sec", type=int, default=int(os.getenv("MAX_WAIT_SEC", 0)))
