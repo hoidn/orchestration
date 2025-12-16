@@ -227,12 +227,8 @@ def main() -> int:
 
             def _fmt(path: Path | str) -> list[str]:
                 quoted = str(path).replace('"', '\\"')
-                script_path = str(stream_script).replace('"', '\\"')
-                # Use stream-json for incremental events, then pretty-print to text.
-                cmd_str = (
-                    f'"{quoted}" -p --dangerously-skip-permissions --verbose '
-                    f'--output-format stream-json | python -u "{script_path}"'
-                )
+                # Use plain text output for direct streaming without JSON parsing
+                cmd_str = f'"{quoted}" -p --dangerously-skip-permissions --verbose --output-format text'
                 return ["/bin/bash", "-lc", cmd_str]
 
             # First, honor explicit CLI override if provided.
