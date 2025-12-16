@@ -94,6 +94,8 @@ def main() -> int:
         help="Model CLI used for supervisor loops (auto: prefer Claude, fallback Codex).",
     )
     ap.add_argument("--branch", type=str, default=os.getenv("ORCHESTRATION_BRANCH", ""), help="Expected Git branch to operate on")
+    ap.add_argument("--prompt", type=str, default=os.getenv("SUPERVISOR_PROMPT", ""),
+                    help="Prompt file name (without path), e.g. 'spec_reviewer'. Overrides supervisor_prompt in config.")
     ap.add_argument("--verbose", action="store_true", help="Print state changes to console during polling")
     ap.add_argument("--heartbeat-secs", type=int, default=int(os.getenv("HEARTBEAT_SECS", "0")), help="Console heartbeat interval while polling (0=off)")
     ap.add_argument("--logdir", type=Path, default=Path("logs"), help="Base directory for per-iteration logs (default: logs/)")
@@ -451,9 +453,14 @@ def main() -> int:
     else:
         branch_target = current_branch()
 
+    # Resolve prompt file: CLI --prompt overrides config
+    prompt_name = args.prompt if args.prompt else cfg.supervisor_prompt
+    if not prompt_name.endswith(".md"):
+        prompt_name = f"{prompt_name}.md"
+    prompt_file = cfg.prompts_dir / prompt_name
+
     if not args.sync_via_git:
         # Legacy async mode: run N iterations back-to-back
-        prompt_file = cfg.prompts_dir / cfg.supervisor_prompt
         for _ in range(args.sync_loops):
             iter_log_path = _log_file("supervisor-legacy-")
             try:
@@ -588,7 +595,6 @@ def main() -> int:
         push_to(branch_target, logp)
 
         # Execute one supervisor iteration (wrap with script(1) when available to preserve PTY behaviour)
-        prompt_file = cfg.prompts_dir / cfg.supervisor_prompt
         try:
             cmd = _resolve_cmd()
         except RuntimeError as e:
