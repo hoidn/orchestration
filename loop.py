@@ -208,6 +208,19 @@ def main() -> int:
             return 1
 
     for _ in range(args.sync_loops):
+        # Check for exit signal in state file
+        if args.state_file.exists():
+            import json
+            try:
+                with open(args.state_file, "r") as f:
+                    state_data = json.load(f)
+                if state_data.get("exit"):
+                    reason = state_data.get("exit_reason", "exit flag set")
+                    print(f"[loop] Exiting: {reason}")
+                    return 0
+            except (json.JSONDecodeError, IOError):
+                pass  # Continue if state file is malformed
+
         # Compute per-iteration log path (branch/prompt aware)
         if not args.no_git:
             ok_probe = _pull_with_error(lambda m: None, "probe")

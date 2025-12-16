@@ -499,9 +499,28 @@ def main() -> int:
         prompt_name = f"{prompt_name}.md"
     prompt_file = cfg.prompts_dir / prompt_name
 
+    def _check_exit_signal() -> tuple[bool, str]:
+        """Check if state file has exit signal. Returns (should_exit, reason)."""
+        if args.state_file.exists():
+            import json
+            try:
+                with open(args.state_file, "r") as f:
+                    state_data = json.load(f)
+                if state_data.get("exit"):
+                    return True, state_data.get("exit_reason", "exit flag set")
+            except (json.JSONDecodeError, IOError):
+                pass
+        return False, ""
+
     if not args.sync_via_git:
         # Legacy async mode: run N iterations back-to-back
         for _ in range(args.sync_loops):
+            # Check for exit signal
+            should_exit, reason = _check_exit_signal()
+            if should_exit:
+                print(f"[supervisor] Exiting: {reason}")
+                return 0
+
             iter_log_path = _log_file("supervisor-legacy-")
             try:
                 cmd = _resolve_cmd()
@@ -522,6 +541,12 @@ def main() -> int:
     args.state_file.parent.mkdir(parents=True, exist_ok=True)
 
     for _ in range(args.sync_loops):
+        # Check for exit signal
+        should_exit, reason = _check_exit_signal()
+        if should_exit:
+            print(f"[supervisor] Exiting: {reason}")
+            return 0
+
         # Determine iteration-specific log file
         # Use current state when available to derive iteration number
         if not _pull_with_error(lambda m: None, "pre-pull"):
