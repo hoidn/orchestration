@@ -7,13 +7,31 @@
 # 3. Initializes the state file
 # 4. Copies the prompts if they don't exist
 #
-# Usage: ./scripts/orchestration/init_spec_bootstrap.sh [templates_dir]
+# Usage: ./scripts/orchestration/init_spec_bootstrap.sh [--reset] [templates_dir]
+#
+# Options:
+#   --reset    Reset the state file even if it already exists
 #
 # The templates_dir defaults to ~/Documents/project-templates
 
 set -e
 
-TEMPLATES_DIR="${1:-$HOME/Documents/project-templates}"
+RESET=false
+TEMPLATES_DIR="$HOME/Documents/project-templates"
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --reset)
+            RESET=true
+            shift
+            ;;
+        *)
+            TEMPLATES_DIR="$1"
+            shift
+            ;;
+    esac
+done
 SPECS_DIR="docs/spec-shards"
 PROMPTS_DIR="prompts"
 STATE_FILE="sync/spec_bootstrap_state.json"
@@ -66,23 +84,41 @@ if [[ -f "$TEMPLATES_DIR/docs/findings.md" ]] && [[ ! -f "docs/findings.md" ]]; 
 fi
 
 # Initialize state file
-if [[ ! -f "$STATE_FILE" ]]; then
+if [[ ! -f "$STATE_FILE" ]] || [[ "$RESET" == "true" ]]; then
+    if [[ -f "$STATE_FILE" ]] && [[ "$RESET" == "true" ]]; then
+        echo "  Resetting: $STATE_FILE"
+    fi
     cat > "$STATE_FILE" << 'EOF'
 {
   "iteration": 0,
+  "phase": "inventory",
   "scores": {
     "coverage": 0,
     "accuracy": 100,
-    "consistency": 100
+    "consistency": 100,
+    "domain_completeness": 0
   },
+  "inventory": {
+    "total_modules": 0,
+    "total_behaviors": 0,
+    "spec_statements": 0,
+    "domain_concepts": 0,
+    "domain_concepts_specified": 0
+  },
+  "modules": {},
   "modules_done": [],
   "task": null,
+  "domain_checklist": [],
   "notes": "Initialized. Run spec_reviewer first to inventory implementation."
 }
 EOF
-    echo "  Created: $STATE_FILE"
+    if [[ "$RESET" == "true" ]]; then
+        echo "  Reset: $STATE_FILE"
+    else
+        echo "  Created: $STATE_FILE"
+    fi
 else
-    echo "  Exists:  $STATE_FILE (skipped)"
+    echo "  Exists:  $STATE_FILE (skipped, use --reset to overwrite)"
 fi
 
 # Note about prompts
