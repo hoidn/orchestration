@@ -46,11 +46,17 @@
 #   scripts/         — User-provided (orchestration submodule)
 #   src/, tests/     — Project implementation code
 #
-# After running, user should:
-#   1. Customize CLAUDE.md with project-specific rules
-#   2. Create/customize orchestration.yaml
-#   3. Replace placeholders in README.md and PROJECT_STATUS.md
-#   4. Run with --spec-bootstrap if extracting specs from existing code
+# After running, user should either:
+#
+#   A. Run interactive initialization (recommended):
+#      claude "Follow prompts/init_project_interactive.md to initialize this project"
+#      This will guide you through populating templates with project-specific content.
+#
+#   B. Manually customize:
+#      1. Customize CLAUDE.md with project-specific rules
+#      2. Customize orchestration.yaml (set implementation.dirs)
+#      3. Replace [PLACEHOLDERS] in README.md, PROJECT_STATUS.md, docs/
+#      4. Run with --spec-bootstrap if extracting specs from existing code
 
 set -e
 
@@ -242,6 +248,14 @@ init_root_files() {
     copy_file "$TEMPLATES_DIR/galph_memory.md" "galph_memory.md"
 }
 
+init_prompts() {
+    log ""
+    log "Copying initialization prompts..."
+
+    # Only copy the interactive init prompt; other prompts are user-provided
+    copy_file "$TEMPLATES_DIR/prompts/init_project_interactive.md" "prompts/init_project_interactive.md"
+}
+
 init_docs() {
     log ""
     log "Copying docs..."
@@ -364,22 +378,26 @@ print_summary() {
     log ""
     log "Next steps:"
     log ""
-    log "1. Customize CLAUDE.md with project-specific rules"
-    log "   (Quick Router paths, local dependencies, exceptions)"
+    log "RECOMMENDED: Run interactive initialization to populate templates:"
     log ""
-    log "2. Customize orchestration.yaml"
-    log "   (set spec_bootstrap.implementation.dirs for your source layout)"
+    log "  claude \"Follow prompts/init_project_interactive.md to initialize this project\""
     log ""
-    log "3. Customize README.md and PROJECT_STATUS.md"
-    log "   (replace [PLACEHOLDERS] with project-specific content)"
+    log "This will guide you through setting project name, paths, domain concepts,"
+    log "and workflow stages — then populate all the template files automatically."
+    log ""
+    log "ALTERNATIVE: Manually edit the template files:"
+    log "  1. CLAUDE.md — Set Quick Router paths, dependencies, exceptions"
+    log "  2. orchestration.yaml — Set spec_bootstrap.implementation.dirs"
+    log "  3. README.md, PROJECT_STATUS.md — Replace [PLACEHOLDERS]"
     log ""
 
     if [[ "$SPEC_BOOTSTRAP" != "true" ]]; then
-        log "4. If bootstrapping specs from existing code, run:"
-        log "   ./scripts/orchestration/init_project.sh --spec-bootstrap"
+        log "After initialization, if you have existing code, run:"
+        log "  ./scripts/orchestration/init_project.sh --spec-bootstrap"
         log ""
     else
-        log "4. Run spec_reviewer to inventory your implementation"
+        log "Spec bootstrap state initialized. Run spec_reviewer to inventory"
+        log "your implementation and generate detailed specifications."
         log ""
     fi
 
@@ -446,6 +464,7 @@ main() {
     # Create structure
     init_directories
     init_root_files
+    init_prompts
     init_docs
     init_architecture
     init_debugging
