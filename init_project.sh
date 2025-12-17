@@ -248,14 +248,6 @@ init_root_files() {
     copy_file "$TEMPLATES_DIR/galph_memory.md" "galph_memory.md"
 }
 
-init_prompts() {
-    log ""
-    log "Copying initialization prompts..."
-
-    # Only copy the interactive init prompt; other prompts are user-provided
-    copy_file "$TEMPLATES_DIR/prompts/init_project_interactive.md" "prompts/init_project_interactive.md"
-}
-
 init_docs() {
     log ""
     log "Copying docs..."
@@ -464,7 +456,6 @@ main() {
     # Create structure
     init_directories
     init_root_files
-    init_prompts
     init_docs
     init_architecture
     init_debugging
