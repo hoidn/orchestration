@@ -111,6 +111,8 @@ def main() -> int:
                     help="Prompt file name (without path), e.g. 'spec_writer' or 'main' (default: main)")
     ap.add_argument("--branch", type=str, default=os.getenv("ORCHESTRATION_BRANCH", ""))
     ap.add_argument("--logdir", type=Path, default=Path("logs"), help="Base directory for per-iteration logs (default: logs/)")
+    ap.add_argument("--allow-dirty", action="store_true",
+                    help="Allow continuing when git pull fails (use with care)")
     # Reports auto-commit (engineer evidence publishing)
     ap.add_argument("--auto-commit-reports", dest="auto_commit_reports", action="store_true",
                     help="Auto-stage+commit report artifacts by file extension after run (default: on)")
@@ -186,6 +188,11 @@ def main() -> int:
                 print(f"[sync] ERROR ({ctx}): {err_line}")
             else:
                 print(f"[sync] ERROR ({ctx}): git pull failed; see iter log.")
+            if args.allow_dirty:
+                msg = f"[sync] WARNING ({ctx}): continuing due to --allow-dirty"
+                logger(msg)
+                print(msg)
+                return True
         return ok
 
     # (reports auto-commit now shared via autocommit.autocommit_reports)

@@ -248,6 +248,7 @@ Notes:
 - Loop
   - `--sync-via-git` · `--sync-loops N` · `--poll-interval S` · `--max-wait-sec S`
   - `--branch NAME` · `--logdir PATH` · `--prompt {main,debug}`
+  - `--allow-dirty` (default: off) to continue when git pull fails (not recommended)
   - Reports auto-commit (publishes Ralph's evidence by file type)
     - `--auto-commit-reports` / `--no-auto-commit-reports` (default: on)
     - `--report-extensions ".png,.jpeg,.npy,.log,.txt,.md,.json,.py,.c,.h,.sh"` — allowed file types (including code diffs/scripts)
