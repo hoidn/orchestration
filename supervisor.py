@@ -149,6 +149,8 @@ def main() -> int:
                     # Include core meta files to avoid self-failing when supervisor updates repo hygiene
                     default=",".join(cfg.doc_whitelist),
                     help="Comma-separated glob whitelist for supervisor auto-commit (doc/meta only)")
+    ap.add_argument("--tolerate-doc-dirty", action="store_true",
+                    help="Do not fail post-run when non-whitelisted dirty paths remain; log a warning instead")
     ap.add_argument("--max-autocommit-bytes", type=int, default=int(os.getenv("MAX_AUTOCOMMIT_BYTES", "1048576")),
                     help="Maximum per-file size (bytes) eligible for auto-commit")
     # Pre-pull auto-commit: try to auto-commit doc/meta before initial pull if pull fails due to local mods
@@ -691,8 +693,11 @@ def main() -> int:
                     _submodule_scrub(logp)
                     committed_docs, forbidden = _supervisor_autocommit_docs(args, logp)
                 if forbidden:
-                    logp("[sync] Doc/meta whitelist violation detected; marking post-run as failed.")
-                    post_ok = False
+                    if args.tolerate_doc_dirty:
+                        logp("[sync] WARNING: Doc/meta whitelist violation detected; continuing due to --tolerate-doc-dirty.")
+                    else:
+                        logp("[sync] Doc/meta whitelist violation detected; marking post-run as failed.")
+                        post_ok = False
 
         # Stamp FIRST (idempotent): write local handoff or failure before any pushes
         st = OrchestrationState.read(str(args.state_file))

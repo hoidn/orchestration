@@ -226,6 +226,7 @@ Notes:
       - Files must be ≤ `--max-autocommit-bytes` (default 1,048,576 bytes)
       - Any dirty tracked changes outside the whitelist cause a clear error and the handoff is aborted (no state flip)
     - Configure whitelist via `--autocommit-whitelist a,b,c` and size via `--max-autocommit-bytes N`
+  - `--tolerate-doc-dirty` to log non-whitelisted dirty paths and continue the handoff (doc/meta auto-commit still runs)
   - Reports auto-commit (publishes Galph's evidence by file type)
     - `--auto-commit-reports` / `--no-auto-commit-reports` (default: on)
     - `--report-extensions ".png,.jpeg,.npy,.txt,.md,.json,.log,.py,.c,.h,.sh"` — allowed file types (logs + source files/scripts)
