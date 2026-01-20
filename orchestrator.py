@@ -95,12 +95,19 @@ def _role_commit_prefix(role: str) -> str:
     return "SUPERVISOR AUTO" if role == "galph" else "RALPH AUTO"
 
 
+def _format_prompt_tag(prompt_name: Optional[str]) -> str:
+    if not prompt_name:
+        return ""
+    return f" (prompt={prompt_name})"
+
+
 def run_combined_autocommit(
     *,
     role: str,
     logger: Logger,
     config: CombinedAutoCommitConfig,
     iteration: Optional[int] = None,
+    prompt_name: Optional[str] = None,
 ) -> None:
     if config.no_git:
         logger(f"[autocommit:{role}] Skipping auto-commit (--no-git)")
@@ -121,6 +128,8 @@ def run_combined_autocommit(
 
     iter_tag = _format_iteration_tag(iteration)
     role_prefix = _role_commit_prefix(role)
+    prompt_tag = _format_prompt_tag(prompt_name)
+    prefix = f"{role_prefix}{prompt_tag}{iter_tag}"
 
     if config.auto_commit_reports:
         try:
@@ -130,7 +139,7 @@ def run_combined_autocommit(
                 max_total_bytes=config.max_report_total_bytes,
                 force_add=config.force_add_reports,
                 logger=logger,
-                commit_message_prefix=f"{role_prefix}: reports evidence — tests: not run{iter_tag}",
+                commit_message_prefix=f"{prefix}: reports evidence — tests: not run",
                 skip_predicate=_skip_reports,
                 allowed_path_globs=config.report_path_globs,
                 dry_run=config.dry_run,
@@ -146,7 +155,7 @@ def run_combined_autocommit(
                 max_file_bytes=config.max_tracked_output_file_bytes,
                 max_total_bytes=config.max_tracked_output_total_bytes,
                 logger=logger,
-                commit_message_prefix=f"{role_prefix}: tracked outputs — tests: not run{iter_tag}",
+                commit_message_prefix=f"{prefix}: tracked outputs — tests: not run",
                 dry_run=config.dry_run,
             )
         except Exception as exc:
@@ -158,7 +167,7 @@ def run_combined_autocommit(
                 whitelist_globs=config.doc_whitelist,
                 max_file_bytes=config.max_autocommit_bytes,
                 logger=logger,
-                commit_message_prefix=f"{role_prefix}: doc/meta hygiene — tests: not run{iter_tag}",
+                commit_message_prefix=f"{prefix}: doc/meta hygiene — tests: not run",
                 dry_run=config.dry_run,
                 ignore_paths=[str(config.state_file)],
             )
@@ -264,7 +273,7 @@ def run_combined_iteration(
     galph_logger: Logger,
     ralph_logger: Logger,
     state_writer: StateWriter,
-    post_turn: Optional[Callable[[str, OrchestrationState, Logger], None]] = None,
+    post_turn: Optional[Callable[[str, OrchestrationState, Logger, str], None]] = None,
 ) -> int:
     def _fail(role: str, message: str) -> int:
         if role == "galph":
@@ -295,7 +304,7 @@ def run_combined_iteration(
     state.stamp(expected_actor="ralph", status="waiting-ralph", galph_commit=short_head())
     state_writer(state)
     if post_turn:
-        post_turn("galph", state, galph_logger)
+        post_turn("galph", state, galph_logger, galph_result.selected_prompt)
 
     state.status = "running-ralph"
     state_writer(state)
@@ -312,7 +321,7 @@ def run_combined_iteration(
     state.stamp(expected_actor="galph", status="complete", increment=True, ralph_commit=short_head())
     state_writer(state)
     if post_turn:
-        post_turn("ralph", state, ralph_logger)
+        post_turn("ralph", state, ralph_logger, ralph_result.selected_prompt)
     return 0
 
 
@@ -455,12 +464,13 @@ def _run_combined(args, cfg) -> int:
         def _ralph_exec(prompt_path: Path) -> int:
             return _exec_for("ralph", prompt_path, ralph_logger, ralph_log)
 
-        def _post_turn(role: str, _: OrchestrationState, logger: Logger) -> None:
+        def _post_turn(role: str, _: OrchestrationState, logger: Logger, prompt_name: str) -> None:
             run_combined_autocommit(
                 role=role,
                 logger=logger,
                 config=auto_commit_cfg,
                 iteration=iter_num,
+                prompt_name=prompt_name,
             )
 
         rc = run_combined_iteration(

@@ -219,7 +219,7 @@ Router notes for combined mode:
 ### Combined auto-commit (local-only)
 - Combined mode can auto-commit doc/meta, reports, and tracked outputs using supervisor defaults.
 - Dirty non-whitelist paths are logged as warnings only (no hard failure).
-- Auto-commit messages include the role prefix (`SUPERVISOR AUTO` or `RALPH AUTO`) plus the iteration tag (for example, `iter=00017`).
+- Auto-commit messages include the role prefix (`SUPERVISOR AUTO` or `RALPH AUTO`), the prompt name, and the iteration tag (for example, `prompt=reviewer.md` and `iter=00017`).
 - Use `--commit-dry-run` to log what would be committed without staging.
 - Use `--no-git` to skip all git operations in combined mode.
 

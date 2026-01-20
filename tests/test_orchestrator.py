@@ -304,7 +304,7 @@ def test_combined_autocommit_after_turns(tmp_path: Path) -> None:
 
     calls: list[str] = []
 
-    def _post_turn(role: str, _: OrchestrationState, __) -> None:
+    def _post_turn(role: str, _: OrchestrationState, __, ___: str) -> None:
         calls.append(role)
 
     rc = run_combined_iteration(
@@ -364,7 +364,13 @@ def test_combined_autocommit_no_git(tmp_path: Path, monkeypatch) -> None:
     )
 
     logs: list[str] = []
-    run_combined_autocommit(role="galph", logger=logs.append, config=config, iteration=1)
+    run_combined_autocommit(
+        role="galph",
+        logger=logs.append,
+        config=config,
+        iteration=1,
+        prompt_name="supervisor.md",
+    )
 
     assert calls == {"docs": 0, "reports": 0, "tracked": 0}
     assert any("no-git" in msg for msg in logs)
@@ -410,7 +416,13 @@ def test_combined_autocommit_dry_run(tmp_path: Path, monkeypatch) -> None:
         state_file=tmp_path / "state.json",
     )
 
-    run_combined_autocommit(role="galph", logger=lambda _: None, config=config, iteration=7)
+    run_combined_autocommit(
+        role="galph",
+        logger=lambda _: None,
+        config=config,
+        iteration=7,
+        prompt_name="main.md",
+    )
 
     assert seen == {"docs": True, "reports": True, "tracked": True}
 
@@ -455,12 +467,19 @@ def test_combined_autocommit_includes_iteration(tmp_path: Path, monkeypatch) -> 
         state_file=tmp_path / "state.json",
     )
 
-    run_combined_autocommit(role="galph", logger=lambda _: None, config=config, iteration=12)
+    run_combined_autocommit(
+        role="galph",
+        logger=lambda _: None,
+        config=config,
+        iteration=12,
+        prompt_name="supervisor.md",
+    )
 
     for prefix in seen.values():
         assert prefix is not None
         assert prefix.startswith("SUPERVISOR AUTO")
         assert "iter=00012" in prefix
+        assert "prompt=supervisor.md" in prefix
 
 
 def test_combined_autocommit_role_prefix(tmp_path: Path, monkeypatch) -> None:
@@ -503,11 +522,18 @@ def test_combined_autocommit_role_prefix(tmp_path: Path, monkeypatch) -> None:
         state_file=tmp_path / "state.json",
     )
 
-    run_combined_autocommit(role="ralph", logger=lambda _: None, config=config, iteration=3)
+    run_combined_autocommit(
+        role="ralph",
+        logger=lambda _: None,
+        config=config,
+        iteration=3,
+        prompt_name="main.md",
+    )
 
     for prefix in seen.values():
         assert prefix is not None
         assert prefix.startswith("RALPH AUTO")
+        assert "prompt=main.md" in prefix
 
 
 def test_combined_autocommit_flag_plumbing(tmp_path: Path) -> None:
@@ -584,7 +610,13 @@ def test_combined_autocommit_best_effort(tmp_path: Path, monkeypatch) -> None:
         state_file=tmp_path / "state.json",
     )
 
-    run_combined_autocommit(role="ralph", logger=logs.append, config=config, iteration=2)
+    run_combined_autocommit(
+        role="ralph",
+        logger=logs.append,
+        config=config,
+        iteration=2,
+        prompt_name="main.md",
+    )
 
     assert any("non-whitelist" in msg for msg in logs)
 
