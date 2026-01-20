@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
+from scripts.orchestration import orchestrator as orchestrator_module
 from scripts.orchestration.orchestrator import build_combined_contexts, run_combined_iteration
 from scripts.orchestration.state import OrchestrationState
 
@@ -268,3 +271,113 @@ def test_router_only_without_output_marks_failed(tmp_path: Path) -> None:
     assert state.expected_actor == "galph"
     assert state.iteration == 1
     assert any("router_only" in msg for msg in errors)
+
+
+def test_role_mode_requires_role(monkeypatch) -> None:
+    called = {"supervisor": False, "loop": False}
+
+    def _supervisor() -> int:
+        called["supervisor"] = True
+        return 0
+
+    def _loop() -> int:
+        called["loop"] = True
+        return 0
+
+    monkeypatch.setattr(orchestrator_module, "supervisor_main", _supervisor)
+    monkeypatch.setattr(orchestrator_module, "loop_main", _loop)
+    monkeypatch.setattr(sys, "argv", ["orchestrator", "--mode", "role", "--sync-via-git"])
+
+    rc = orchestrator_module.main()
+
+    assert rc == 2
+    assert called == {"supervisor": False, "loop": False}
+
+
+def test_role_mode_requires_sync(monkeypatch) -> None:
+    called = {"supervisor": False, "loop": False}
+
+    def _supervisor() -> int:
+        called["supervisor"] = True
+        return 0
+
+    def _loop() -> int:
+        called["loop"] = True
+        return 0
+
+    monkeypatch.setattr(orchestrator_module, "supervisor_main", _supervisor)
+    monkeypatch.setattr(orchestrator_module, "loop_main", _loop)
+    monkeypatch.setattr(sys, "argv", ["orchestrator", "--mode", "role", "--role", "galph"])
+
+    rc = orchestrator_module.main()
+
+    assert rc == 2
+    assert called == {"supervisor": False, "loop": False}
+
+
+def test_role_mode_forwards_supervisor_prompt(monkeypatch) -> None:
+    captured: dict[str, str | None] = {}
+
+    def _supervisor() -> int:
+        captured["value"] = os.getenv("SUPERVISOR_PROMPT")
+        return 7
+
+    monkeypatch.delenv("SUPERVISOR_PROMPT", raising=False)
+    monkeypatch.setattr(orchestrator_module, "supervisor_main", _supervisor)
+    monkeypatch.setattr(orchestrator_module, "loop_main", lambda: 0)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "orchestrator",
+            "--mode",
+            "role",
+            "--role",
+            "galph",
+            "--sync-via-git",
+            "--prompt-supervisor",
+            "custom_supervisor.md",
+        ],
+    )
+
+    rc = orchestrator_module.main()
+
+    assert rc == 7
+    assert captured["value"] == "custom_supervisor.md"
+
+
+def test_role_mode_forwards_loop_prompt(monkeypatch) -> None:
+    captured: dict[str, str | None] = {}
+    called = {"supervisor": False}
+
+    def _loop() -> int:
+        captured["value"] = os.getenv("LOOP_PROMPT")
+        return 8
+
+    def _supervisor() -> int:
+        called["supervisor"] = True
+        return 0
+
+    monkeypatch.delenv("LOOP_PROMPT", raising=False)
+    monkeypatch.setattr(orchestrator_module, "loop_main", _loop)
+    monkeypatch.setattr(orchestrator_module, "supervisor_main", _supervisor)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "orchestrator",
+            "--mode",
+            "role",
+            "--role",
+            "ralph",
+            "--sync-via-git",
+            "--prompt-main",
+            "custom_main.md",
+        ],
+    )
+
+    rc = orchestrator_module.main()
+
+    assert rc == 8
+    assert captured["value"] == "custom_main.md"
+    assert called["supervisor"] is False
