@@ -654,6 +654,7 @@ def main() -> int:
         st = OrchestrationState.read(str(args.state_file))
         if args.use_router:
             st.last_prompt = selected_prompt
+            st.last_prompt_actor = "galph"
         st.status = "running-galph"
         st.write(str(args.state_file))
         add([str(args.state_file)])
