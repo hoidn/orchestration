@@ -364,7 +364,7 @@ def test_combined_autocommit_no_git(tmp_path: Path, monkeypatch) -> None:
     )
 
     logs: list[str] = []
-    run_combined_autocommit(role="galph", logger=logs.append, config=config)
+    run_combined_autocommit(role="galph", logger=logs.append, config=config, iteration=1)
 
     assert calls == {"docs": 0, "reports": 0, "tracked": 0}
     assert any("no-git" in msg for msg in logs)
@@ -410,9 +410,104 @@ def test_combined_autocommit_dry_run(tmp_path: Path, monkeypatch) -> None:
         state_file=tmp_path / "state.json",
     )
 
-    run_combined_autocommit(role="galph", logger=lambda _: None, config=config)
+    run_combined_autocommit(role="galph", logger=lambda _: None, config=config, iteration=7)
 
     assert seen == {"docs": True, "reports": True, "tracked": True}
+
+
+def test_combined_autocommit_includes_iteration(tmp_path: Path, monkeypatch) -> None:
+    seen = {"docs": None, "reports": None, "tracked": None}
+
+    def _docs(**kwargs) -> tuple[bool, list[str], list[str]]:
+        seen["docs"] = kwargs.get("commit_message_prefix")
+        return False, [], []
+
+    def _reports(**kwargs) -> tuple[bool, list[str], list[str]]:
+        seen["reports"] = kwargs.get("commit_message_prefix")
+        return False, [], []
+
+    def _tracked(**kwargs) -> tuple[bool, list[str], list[str]]:
+        seen["tracked"] = kwargs.get("commit_message_prefix")
+        return False, [], []
+
+    monkeypatch.setattr(orchestrator_module, "autocommit_docs", _docs)
+    monkeypatch.setattr(orchestrator_module, "autocommit_reports", _reports)
+    monkeypatch.setattr(orchestrator_module, "autocommit_tracked_outputs", _tracked)
+
+    config = CombinedAutoCommitConfig(
+        auto_commit_docs=True,
+        auto_commit_reports=True,
+        auto_commit_tracked_outputs=True,
+        dry_run=False,
+        no_git=False,
+        doc_whitelist=["docs/**/*.md"],
+        max_autocommit_bytes=1024,
+        report_extensions={".md"},
+        report_path_globs=(),
+        max_report_file_bytes=1024,
+        max_report_total_bytes=2048,
+        force_add_reports=False,
+        tracked_output_globs=["tests/fixtures/**/*.npz"],
+        tracked_output_extensions={".npz"},
+        max_tracked_output_file_bytes=1024,
+        max_tracked_output_total_bytes=2048,
+        logdir_prefix_parts=(),
+        state_file=tmp_path / "state.json",
+    )
+
+    run_combined_autocommit(role="galph", logger=lambda _: None, config=config, iteration=12)
+
+    for prefix in seen.values():
+        assert prefix is not None
+        assert prefix.startswith("SUPERVISOR AUTO")
+        assert "iter=00012" in prefix
+
+
+def test_combined_autocommit_role_prefix(tmp_path: Path, monkeypatch) -> None:
+    seen = {"docs": None, "reports": None, "tracked": None}
+
+    def _docs(**kwargs) -> tuple[bool, list[str], list[str]]:
+        seen["docs"] = kwargs.get("commit_message_prefix")
+        return False, [], []
+
+    def _reports(**kwargs) -> tuple[bool, list[str], list[str]]:
+        seen["reports"] = kwargs.get("commit_message_prefix")
+        return False, [], []
+
+    def _tracked(**kwargs) -> tuple[bool, list[str], list[str]]:
+        seen["tracked"] = kwargs.get("commit_message_prefix")
+        return False, [], []
+
+    monkeypatch.setattr(orchestrator_module, "autocommit_docs", _docs)
+    monkeypatch.setattr(orchestrator_module, "autocommit_reports", _reports)
+    monkeypatch.setattr(orchestrator_module, "autocommit_tracked_outputs", _tracked)
+
+    config = CombinedAutoCommitConfig(
+        auto_commit_docs=True,
+        auto_commit_reports=True,
+        auto_commit_tracked_outputs=True,
+        dry_run=False,
+        no_git=False,
+        doc_whitelist=["docs/**/*.md"],
+        max_autocommit_bytes=1024,
+        report_extensions={".md"},
+        report_path_globs=(),
+        max_report_file_bytes=1024,
+        max_report_total_bytes=2048,
+        force_add_reports=False,
+        tracked_output_globs=["tests/fixtures/**/*.npz"],
+        tracked_output_extensions={".npz"},
+        max_tracked_output_file_bytes=1024,
+        max_tracked_output_total_bytes=2048,
+        logdir_prefix_parts=(),
+        state_file=tmp_path / "state.json",
+    )
+
+    run_combined_autocommit(role="ralph", logger=lambda _: None, config=config, iteration=3)
+
+    for prefix in seen.values():
+        assert prefix is not None
+        assert prefix.startswith("RALPH AUTO")
 
 
 def test_combined_autocommit_flag_plumbing(tmp_path: Path) -> None:
@@ -489,7 +584,7 @@ def test_combined_autocommit_best_effort(tmp_path: Path, monkeypatch) -> None:
         state_file=tmp_path / "state.json",
     )
 
-    run_combined_autocommit(role="ralph", logger=logs.append, config=config)
+    run_combined_autocommit(role="ralph", logger=logs.append, config=config, iteration=2)
 
     assert any("non-whitelist" in msg for msg in logs)
 

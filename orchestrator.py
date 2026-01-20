@@ -91,6 +91,10 @@ def _format_iteration_tag(iteration: Optional[int]) -> str:
     return f" (iter={iteration:05d})"
 
 
+def _role_commit_prefix(role: str) -> str:
+    return "SUPERVISOR AUTO" if role == "galph" else "RALPH AUTO"
+
+
 def run_combined_autocommit(
     *,
     role: str,
@@ -116,6 +120,7 @@ def run_combined_autocommit(
         return False
 
     iter_tag = _format_iteration_tag(iteration)
+    role_prefix = _role_commit_prefix(role)
 
     if config.auto_commit_reports:
         try:
@@ -125,7 +130,7 @@ def run_combined_autocommit(
                 max_total_bytes=config.max_report_total_bytes,
                 force_add=config.force_add_reports,
                 logger=logger,
-                commit_message_prefix=f"SUPERVISOR AUTO: reports evidence — tests: not run{iter_tag}",
+                commit_message_prefix=f"{role_prefix}: reports evidence — tests: not run{iter_tag}",
                 skip_predicate=_skip_reports,
                 allowed_path_globs=config.report_path_globs,
                 dry_run=config.dry_run,
@@ -141,7 +146,7 @@ def run_combined_autocommit(
                 max_file_bytes=config.max_tracked_output_file_bytes,
                 max_total_bytes=config.max_tracked_output_total_bytes,
                 logger=logger,
-                commit_message_prefix=f"SUPERVISOR AUTO: tracked outputs — tests: not run{iter_tag}",
+                commit_message_prefix=f"{role_prefix}: tracked outputs — tests: not run{iter_tag}",
                 dry_run=config.dry_run,
             )
         except Exception as exc:
@@ -153,7 +158,7 @@ def run_combined_autocommit(
                 whitelist_globs=config.doc_whitelist,
                 max_file_bytes=config.max_autocommit_bytes,
                 logger=logger,
-                commit_message_prefix=f"SUPERVISOR AUTO: doc/meta hygiene — tests: not run{iter_tag}",
+                commit_message_prefix=f"{role_prefix}: doc/meta hygiene — tests: not run{iter_tag}",
                 dry_run=config.dry_run,
                 ignore_paths=[str(config.state_file)],
             )
