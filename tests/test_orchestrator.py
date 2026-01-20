@@ -729,3 +729,75 @@ def test_role_mode_forwards_loop_prompt(monkeypatch) -> None:
     assert rc == 8
     assert captured["value"] == "custom_main.md"
     assert called["supervisor"] is False
+
+
+def test_combined_review_last_prompt_actor(tmp_path: Path) -> None:
+    """Verify combined mode honors last_prompt_actor for review cadence.
+
+    This regression test ensures that when review_every_n triggers a review
+    cadence hit, the reviewer runs only once (on galph's turn), and ralph
+    correctly skips the reviewer because last_prompt_actor is set to 'galph'.
+
+    Without the last_prompt_actor annotation (the fix from ORCH-ROUTER-001),
+    both galph and ralph would select reviewer.md on cadence iterations.
+
+    Reference: scripts/orchestration/README.md:130 (authoritative cadence behavior)
+    Reference: scripts/orchestration/tests/test_sync_router_review.py (sync parity tests)
+    """
+    prompts_dir = tmp_path / "prompts"
+    prompts_dir.mkdir()
+    for name in ("supervisor.md", "main.md", "reviewer.md"):
+        _write_prompt(prompts_dir / name)
+
+    # Iteration 2 with review_every_n=2 triggers cadence
+    state = OrchestrationState(iteration=2, expected_actor="galph", status="idle")
+    allowlist = ["supervisor.md", "main.md", "reviewer.md"]
+
+    galph_ctx, ralph_ctx = build_combined_contexts(
+        prompts_dir=prompts_dir,
+        supervisor_prompt="supervisor.md",
+        main_prompt="main.md",
+        reviewer_prompt="reviewer.md",
+        allowlist=allowlist,
+        review_every_n=2,
+        router_mode="router_default",
+        router_output=None,
+        use_router=True,
+    )
+
+    executed: list[str] = []
+    state_snapshots: list[tuple[str, str | None]] = []
+
+    def _exec(prompt_path: Path) -> int:
+        executed.append(prompt_path.name)
+        return 0
+
+    def _state_writer(st: OrchestrationState) -> None:
+        # Capture state snapshots to verify last_prompt_actor transitions
+        state_snapshots.append((st.expected_actor, st.last_prompt_actor))
+
+    rc = run_combined_iteration(
+        state=state,
+        galph_ctx=galph_ctx,
+        ralph_ctx=ralph_ctx,
+        galph_executor=_exec,
+        ralph_executor=_exec,
+        galph_logger=lambda _: None,
+        ralph_logger=lambda _: None,
+        state_writer=_state_writer,
+    )
+
+    assert rc == 0
+    # On cadence iteration, galph runs reviewer, ralph runs main
+    assert executed == ["reviewer.md", "main.md"]
+    # After galph turn: expected_actor=ralph, last_prompt_actor=galph
+    # After ralph turn: expected_actor=galph (incremented iteration)
+    assert state.last_prompt == "main.md"
+    assert state.last_prompt_actor == "ralph"
+    # Verify the state transitions captured by _state_writer
+    # Transitions: galph->running, galph->waiting-ralph, ralph->running, ralph->complete
+    assert len(state_snapshots) >= 3
+    # After galph turn, last_prompt_actor should be 'galph'
+    # so ralph knows to skip reviewer
+    galph_done_snapshot = [s for s in state_snapshots if s[0] == "ralph" and s[1] == "galph"]
+    assert galph_done_snapshot, "last_prompt_actor should be 'galph' after galph turn"
