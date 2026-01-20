@@ -5,10 +5,12 @@ import os
 import shutil
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath
 from typing import Callable, Optional
 
+from .autocommit import autocommit_docs, autocommit_reports, autocommit_tracked_outputs
 from .config import load_config, claude_cli_default
 from .git_bus import assert_on_branch, current_branch, short_head
 from .loop import main as loop_main
@@ -20,6 +22,124 @@ from .supervisor import main as supervisor_main
 
 Logger = Callable[[str], None]
 StateWriter = Callable[[OrchestrationState], None]
+
+
+@dataclass(frozen=True)
+class CombinedAutoCommitConfig:
+    auto_commit_docs: bool
+    auto_commit_reports: bool
+    auto_commit_tracked_outputs: bool
+    dry_run: bool
+    no_git: bool
+    doc_whitelist: list[str]
+    max_autocommit_bytes: int
+    report_extensions: set[str]
+    report_path_globs: tuple[str, ...]
+    max_report_file_bytes: int
+    max_report_total_bytes: int
+    force_add_reports: bool
+    tracked_output_globs: list[str]
+    tracked_output_extensions: set[str]
+    max_tracked_output_file_bytes: int
+    max_tracked_output_total_bytes: int
+    logdir_prefix_parts: tuple[str, ...]
+    state_file: Path
+
+
+def _build_autocommit_config(args, cfg) -> CombinedAutoCommitConfig:
+    report_path_globs = tuple(p.strip() for p in args.report_path_globs.split(",") if p.strip())
+    logdir_prefix_parts = tuple(part for part in PurePath(args.logdir).parts if part not in {"", "."})
+    doc_whitelist = [p.strip() for p in args.autocommit_whitelist.split(",") if p.strip()]
+    tracked_globs = [p.strip() for p in args.tracked_output_globs.split(",") if p.strip()]
+    tracked_exts = {e.strip().lower() for e in args.tracked_output_extensions.split(",") if e.strip()}
+    report_exts = {e.strip().lower() for e in args.report_extensions.split(",") if e.strip()}
+    return CombinedAutoCommitConfig(
+        auto_commit_docs=args.auto_commit_docs,
+        auto_commit_reports=args.auto_commit_reports,
+        auto_commit_tracked_outputs=args.auto_commit_tracked_outputs,
+        dry_run=args.commit_dry_run,
+        no_git=args.no_git,
+        doc_whitelist=doc_whitelist,
+        max_autocommit_bytes=int(args.max_autocommit_bytes),
+        report_extensions=report_exts or set(cfg.report_extensions),
+        report_path_globs=report_path_globs,
+        max_report_file_bytes=int(args.max_report_file_bytes),
+        max_report_total_bytes=int(args.max_report_total_bytes),
+        force_add_reports=args.force_add_reports,
+        tracked_output_globs=tracked_globs,
+        tracked_output_extensions=tracked_exts or set(cfg.tracked_output_extensions),
+        max_tracked_output_file_bytes=int(args.max_tracked_output_file_bytes),
+        max_tracked_output_total_bytes=int(args.max_tracked_output_total_bytes),
+        logdir_prefix_parts=logdir_prefix_parts,
+        state_file=args.state_file,
+    )
+
+
+def run_combined_autocommit(*, role: str, logger: Logger, config: CombinedAutoCommitConfig) -> None:
+    if config.no_git:
+        logger(f"[autocommit:{role}] Skipping auto-commit (--no-git)")
+        return
+    if config.dry_run:
+        logger(f"[autocommit:{role}] DRY-RUN: no git add/commit")
+
+    def _within(parts: tuple[str, ...], prefix: tuple[str, ...]) -> bool:
+        return bool(prefix) and parts[:len(prefix)] == prefix
+
+    def _skip_reports(path: str) -> bool:
+        parts = PurePosixPath(path).parts
+        if _within(parts, config.logdir_prefix_parts):
+            return True
+        if parts and parts[0] == "tmp":
+            return True
+        return False
+
+    if config.auto_commit_reports:
+        try:
+            autocommit_reports(
+                allowed_extensions=config.report_extensions,
+                max_file_bytes=config.max_report_file_bytes,
+                max_total_bytes=config.max_report_total_bytes,
+                force_add=config.force_add_reports,
+                logger=logger,
+                commit_message_prefix="SUPERVISOR AUTO: reports evidence — tests: not run",
+                skip_predicate=_skip_reports,
+                allowed_path_globs=config.report_path_globs,
+                dry_run=config.dry_run,
+            )
+        except Exception as exc:
+            logger(f"[autocommit:{role}] WARNING: reports auto-commit failed: {exc}")
+
+    if config.auto_commit_tracked_outputs:
+        try:
+            autocommit_tracked_outputs(
+                tracked_output_globs=config.tracked_output_globs,
+                tracked_output_extensions=config.tracked_output_extensions,
+                max_file_bytes=config.max_tracked_output_file_bytes,
+                max_total_bytes=config.max_tracked_output_total_bytes,
+                logger=logger,
+                commit_message_prefix="SUPERVISOR AUTO: tracked outputs — tests: not run",
+                dry_run=config.dry_run,
+            )
+        except Exception as exc:
+            logger(f"[autocommit:{role}] WARNING: tracked outputs auto-commit failed: {exc}")
+
+    if config.auto_commit_docs:
+        try:
+            _, _, forbidden = autocommit_docs(
+                whitelist_globs=config.doc_whitelist,
+                max_file_bytes=config.max_autocommit_bytes,
+                logger=logger,
+                commit_message_prefix="SUPERVISOR AUTO: doc/meta hygiene — tests: not run",
+                dry_run=config.dry_run,
+                ignore_paths=[str(config.state_file)],
+            )
+            if forbidden:
+                logger(
+                    f"[autocommit:{role}] WARNING: non-whitelist dirty paths remain: "
+                    + ", ".join(forbidden)
+                )
+        except Exception as exc:
+            logger(f"[autocommit:{role}] WARNING: doc/meta auto-commit failed: {exc}")
 
 
 def _make_logger(path: Path) -> Logger:
@@ -115,6 +235,7 @@ def run_combined_iteration(
     galph_logger: Logger,
     ralph_logger: Logger,
     state_writer: StateWriter,
+    post_turn: Optional[Callable[[str, OrchestrationState, Logger], None]] = None,
 ) -> int:
     def _fail(role: str, message: str) -> int:
         if role == "galph":
@@ -144,6 +265,8 @@ def run_combined_iteration(
 
     state.stamp(expected_actor="ralph", status="waiting-ralph", galph_commit=short_head())
     state_writer(state)
+    if post_turn:
+        post_turn("galph", state, galph_logger)
 
     state.status = "running-ralph"
     state_writer(state)
@@ -159,6 +282,8 @@ def run_combined_iteration(
 
     state.stamp(expected_actor="galph", status="complete", increment=True, ralph_commit=short_head())
     state_writer(state)
+    if post_turn:
+        post_turn("ralph", state, ralph_logger)
     return 0
 
 
@@ -255,6 +380,7 @@ def _run_combined(args, cfg) -> int:
     if not main_prompt_name.endswith(".md"):
         main_prompt_name = f"{main_prompt_name}.md"
     main_prompt_stem = Path(main_prompt_name).stem
+    auto_commit_cfg = _build_autocommit_config(args, cfg)
 
     for _ in range(args.sync_loops):
         should_exit, reason = _check_exit_signal(state_file)
@@ -317,6 +443,9 @@ def _run_combined(args, cfg) -> int:
         def _ralph_exec(prompt_path: Path) -> int:
             return tee_run(cmd, prompt_path, ralph_log)
 
+        def _post_turn(role: str, _: OrchestrationState, logger: Logger) -> None:
+            run_combined_autocommit(role=role, logger=logger, config=auto_commit_cfg)
+
         rc = run_combined_iteration(
             state=state,
             galph_ctx=galph_ctx,
@@ -326,6 +455,7 @@ def _run_combined(args, cfg) -> int:
             galph_logger=galph_logger,
             ralph_logger=ralph_logger,
             state_writer=_write_state,
+            post_turn=_post_turn,
         )
         if rc != 0:
             return rc
@@ -342,6 +472,9 @@ def main() -> int:
     ap.add_argument("--mode", choices=["combined", "role"], default=os.getenv("ORCHESTRATOR_MODE", "combined"))
     ap.add_argument("--role", choices=["galph", "ralph"], default=os.getenv("ORCHESTRATOR_ROLE", ""))
     ap.add_argument("--sync-via-git", action="store_true", help="Enable sync-via-git behavior for role mode")
+    ap.add_argument("--no-git", action="store_true", help="Disable git operations (combined mode only)")
+    ap.add_argument("--commit-dry-run", action="store_true",
+                    help="Log auto-commit actions without staging/committing")
     ap.add_argument("--sync-loops", type=int, default=int(os.getenv("SYNC_LOOPS", 20)))
     ap.add_argument("--poll-interval", type=int, default=int(os.getenv("POLL_INTERVAL", 5)))
     ap.add_argument("--state-file", type=Path, default=Path(os.getenv("STATE_FILE", str(cfg.state_file))))
@@ -393,6 +526,56 @@ def main() -> int:
         type=str,
         default=os.getenv("ROUTER_MODE", cfg.router_mode),
     )
+    # Auto-commit doc/meta hygiene (combined mode)
+    ap.add_argument("--auto-commit-docs", dest="auto_commit_docs", action="store_true",
+                    help="Auto-stage+commit doc/meta whitelist when dirty (default: on)")
+    ap.add_argument("--no-auto-commit-docs", dest="auto_commit_docs", action="store_false",
+                    help="Disable auto commit of doc/meta whitelist")
+    ap.set_defaults(auto_commit_docs=True)
+    ap.add_argument("--autocommit-whitelist", type=str,
+                    default=",".join(cfg.doc_whitelist),
+                    help="Comma-separated glob whitelist for auto-commit (doc/meta only)")
+    ap.add_argument("--max-autocommit-bytes", type=int, default=int(os.getenv("MAX_AUTOCOMMIT_BYTES", "1048576")),
+                    help="Maximum per-file size (bytes) eligible for auto-commit")
+    # Reports auto-commit (combined mode)
+    ap.add_argument("--auto-commit-reports", dest="auto_commit_reports", action="store_true",
+                    help="Auto-stage+commit report artifacts by file extension after each turn (default: on)")
+    ap.add_argument("--no-auto-commit-reports", dest="auto_commit_reports", action="store_false",
+                    help="Disable auto commit of report artifacts")
+    ap.set_defaults(auto_commit_reports=True)
+    ap.add_argument("--report-extensions", type=str,
+                    default=os.getenv("SUPERVISOR_REPORT_EXTENSIONS", ",".join(cfg.report_extensions)),
+                    help="Comma-separated list of allowed report file extensions (lowercase, with dots)")
+    ap.add_argument("--max-report-file-bytes", type=int, default=int(os.getenv("SUPERVISOR_MAX_REPORT_FILE_BYTES", "5242880")),
+                    help="Maximum per-file size (bytes) eligible for reports auto-commit (default 5 MiB)")
+    ap.add_argument("--max-report-total-bytes", type=int, default=int(os.getenv("SUPERVISOR_MAX_REPORT_TOTAL_BYTES", "20971520")),
+                    help="Maximum total size (bytes) staged per iteration for reports (default 20 MiB)")
+    ap.add_argument("--force-add-reports", dest="force_add_reports", action="store_true",
+                    help="Force-add report files even if ignored (.gitignore) (default: on)")
+    ap.add_argument("--no-force-add-reports", dest="force_add_reports", action="store_false",
+                    help="Do not force-add ignored report files")
+    ap.set_defaults(force_add_reports=True)
+    ap.add_argument("--report-path-globs", type=str,
+                    default=os.getenv("SUPERVISOR_REPORT_PATH_GLOBS", ""),
+                    help="Comma-separated glob allowlist for report auto-commit paths (default: none)")
+    # Tracked outputs auto-commit (combined mode)
+    ap.add_argument("--auto-commit-tracked-outputs", dest="auto_commit_tracked_outputs", action="store_true",
+                    help="Auto-stage+commit modified tracked outputs when within limits (default: on)")
+    ap.add_argument("--no-auto-commit-tracked-outputs", dest="auto_commit_tracked_outputs", action="store_false",
+                    help="Disable auto commit of modified tracked outputs")
+    ap.set_defaults(auto_commit_tracked_outputs=True)
+    ap.add_argument("--tracked-output-globs", type=str,
+                    default=os.getenv("SUPERVISOR_TRACKED_OUTPUT_GLOBS", ",".join(cfg.tracked_output_globs)),
+                    help="Comma-separated glob allowlist for tracked output paths (default targets test fixtures)")
+    ap.add_argument("--tracked-output-extensions", type=str,
+                    default=os.getenv("SUPERVISOR_TRACKED_OUTPUT_EXTENSIONS", ",".join(cfg.tracked_output_extensions)),
+                    help="Comma-separated list of allowed file extensions for tracked outputs")
+    ap.add_argument("--max-tracked-output-file-bytes", type=int,
+                    default=int(os.getenv("SUPERVISOR_MAX_TRACKED_OUTPUT_FILE_BYTES", str(32 * 1024 * 1024))),
+                    help="Maximum per-file size (bytes) eligible for tracked outputs auto-commit (default 32 MiB)")
+    ap.add_argument("--max-tracked-output-total-bytes", type=int,
+                    default=int(os.getenv("SUPERVISOR_MAX_TRACKED_OUTPUT_TOTAL_BYTES", str(100 * 1024 * 1024))),
+                    help="Maximum total size (bytes) staged per iteration for tracked outputs (default 100 MiB)")
 
     args, _ = ap.parse_known_args()
 

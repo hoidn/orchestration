@@ -182,6 +182,12 @@ Router notes for combined mode:
 - Review cadence is applied once per iteration (galph only).
 - Router overrides (router prompt output) are applied only to galph; ralph uses deterministic routing.
 
+### Combined auto-commit (local-only)
+- Combined mode can auto-commit doc/meta, reports, and tracked outputs using supervisor defaults.
+- Dirty non-whitelist paths are logged as warnings only (no hard failure).
+- Use `--commit-dry-run` to log what would be committed without staging.
+- Use `--no-git` to skip all git operations in combined mode.
+
 ## Logging
 - Descriptive per‑iteration logs:
   - Supervisor: `logs/<branch>/galph/iter-00017_YYYYMMDD_HHMMSS.log`
@@ -309,6 +315,13 @@ Notes:
     - `--max-report-file-bytes N` (default 5 MiB) · `--max-report-total-bytes N` (default 20 MiB)
     - `--force-add-reports` (default: on) — force-add files even if ignored by .gitignore
     - Notes: stamp-first handoff ensures reports + state publish together; adjust caps/extension list / path globs as needed for your workflow.
+
+- Orchestrator (combined mode)
+  - `--no-git` · `--commit-dry-run`
+  - `--auto-commit-docs` / `--no-auto-commit-docs` · `--autocommit-whitelist` · `--max-autocommit-bytes`
+  - `--auto-commit-reports` / `--no-auto-commit-reports` · `--report-extensions` · `--report-path-globs`
+  - `--auto-commit-tracked-outputs` / `--no-auto-commit-tracked-outputs` · `--tracked-output-globs` · `--tracked-output-extensions`
+  - Notes: local-only auto-commit uses supervisor defaults; best-effort warnings on non-whitelist dirt.
 
 ## Troubleshooting
 - Pull failures: both orchestrators now fail fast on git pull errors (including untracked‑file or local‑modification collisions). Read the console/log message, resolve locally (commit/stash/move), and rerun.
