@@ -18,6 +18,8 @@ Create `orchestration.yaml` in your project root:
 # Prompt paths
 prompts_dir: prompts
 supervisor_prompt: supervisor.md
+main_prompt: main.md
+reviewer_prompt: reviewer.md
 
 # State management
 state_file: sync/state.json
@@ -42,6 +44,17 @@ input_file: input.md
 # Directories
 logs_dir: logs
 tmp_dir: tmp
+
+# Router (optional)
+router:
+  enabled: false
+  mode: router_default  # router_default | router_first | router_only
+  prompt: router.md
+  review_every_n: 0
+  allowlist:
+    - supervisor.md
+    - main.md
+    - reviewer.md
 ```
 
 The config is loaded by searching upward from CWD for `orchestration.yaml`. If not found, sensible defaults are used.
@@ -83,11 +96,12 @@ spec_bootstrap:
 ## State File
 - Path: `sync/state.json` (tracked and pushed so both machines see updates)
 - Fields:
-  - `iteration` (int)
-  - `expected_actor` ("galph" | "ralph")
-  - `status` ("idle" | "running-galph" | "waiting-ralph" | "running-ralph" | "complete" | "failed")
-  - `last_update`, `lease_expires_at` (ISO8601)
-  - `galph_commit`, `ralph_commit` (short SHAs)
+- `iteration` (int)
+- `expected_actor` ("galph" | "ralph")
+- `status` ("idle" | "running-galph" | "waiting-ralph" | "running-ralph" | "complete" | "failed")
+- `last_update`, `lease_expires_at` (ISO8601)
+- `galph_commit`, `ralph_commit` (short SHAs)
+- `last_prompt` (string; set by router-enabled runs only)
 
 ## Branch Safety (important)
 - Always operate on the intended branch; pass `--branch <name>` to both runners.
@@ -100,6 +114,25 @@ spec_bootstrap:
 - No max wait by default (`--max-wait-sec S` to enable)
 - Loop prompt: `main` (feature work). Switch with `--prompt debug` for parity/trace loops.
 - Per‑iteration logs under `logs/` (see Logging).
+
+## Router (optional)
+
+Deterministic routing can select the per-iteration prompt using `sync/state.json` plus a review cadence.
+
+- Deterministic routing uses `expected_actor` + `iteration` to select a prompt.
+- Review cadence: when `review_every_n > 0` and `iteration % review_every_n == 0`, the reviewer prompt is selected.
+- Allowlist enforcement: selected prompts must be in the allowlist and exist on disk.
+- Actor gating: reviewer prompt is allowed for both actors; otherwise the prompt must match the actor default.
+- Optional router prompt override: if configured, a router prompt runs after deterministic selection and may override it.
+  - Router output must be a single, non-empty line naming a prompt file.
+  - Invalid output (empty, missing, not allowlisted, or actor-disallowed) aborts the run with a descriptive error.
+- Router modes:
+  - `router_default`: deterministic selection first; router prompt (if configured) may override.
+  - `router_first`: router prompt runs first when configured; otherwise deterministic selection is used.
+  - `router_only`: router prompt required; deterministic selection is never used.
+- State annotation: when router is enabled, the final selected prompt is stored in `sync/state.json` as `last_prompt` only.
+
+Implementation lives in `scripts/orchestration/router.py` with a thin wrapper `scripts/orchestration/router.sh`.
 
 ### Doc/meta auto‑commit whitelist
 - The supervisor auto‑stages/commits a limited set of doc/meta paths at end of turn to keep the tree clean.

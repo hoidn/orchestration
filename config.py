@@ -30,6 +30,15 @@ class OrchConfig:
     # Prompt paths
     prompts_dir: Path = field(default_factory=lambda: Path("prompts"))
     supervisor_prompt: str = "supervisor.md"
+    main_prompt: str = "main.md"
+    reviewer_prompt: str = "reviewer.md"
+
+    # Router configuration
+    router_enabled: bool = False
+    router_prompt: Optional[str] = None
+    router_review_every_n: int = 0
+    router_allowlist: list[str] = field(default_factory=list)
+    router_mode: str = "router_default"
 
     # State management
     state_file: Path = field(default_factory=lambda: Path("sync/state.json"))
@@ -194,6 +203,10 @@ def load_config(config_path: Optional[Path] = None, warn_missing: bool = True) -
         cfg.prompts_dir = Path(data["prompts_dir"])
     if "supervisor_prompt" in data:
         cfg.supervisor_prompt = data["supervisor_prompt"]
+    if "main_prompt" in data:
+        cfg.main_prompt = data["main_prompt"]
+    if "reviewer_prompt" in data:
+        cfg.reviewer_prompt = data["reviewer_prompt"]
     if "state_file" in data:
         cfg.state_file = Path(data["state_file"])
     if "doc_whitelist" in data:
@@ -212,6 +225,32 @@ def load_config(config_path: Optional[Path] = None, warn_missing: bool = True) -
         cfg.report_extensions = list(data["report_extensions"])
     if "tracked_output_extensions" in data:
         cfg.tracked_output_extensions = list(data["tracked_output_extensions"])
+
+    # Router settings (top-level)
+    if "router_enabled" in data:
+        cfg.router_enabled = bool(data["router_enabled"])
+    if "router_prompt" in data:
+        cfg.router_prompt = data["router_prompt"] or None
+    if "router_review_every_n" in data:
+        cfg.router_review_every_n = int(data["router_review_every_n"])
+    if "router_allowlist" in data:
+        cfg.router_allowlist = list(data["router_allowlist"])
+    if "router_mode" in data:
+        cfg.router_mode = str(data["router_mode"])
+
+    # Router settings (nested section)
+    if "router" in data:
+        router = data["router"] or {}
+        if "enabled" in router:
+            cfg.router_enabled = bool(router["enabled"])
+        if "prompt" in router:
+            cfg.router_prompt = router["prompt"] or None
+        if "review_every_n" in router:
+            cfg.router_review_every_n = int(router["review_every_n"])
+        if "allowlist" in router:
+            cfg.router_allowlist = list(router["allowlist"])
+        if "mode" in router:
+            cfg.router_mode = str(router["mode"])
 
     # Parse spec_bootstrap section if present
     if "spec_bootstrap" in data:

@@ -28,6 +28,7 @@ class OrchestrationState:
     lease_expires_at: str = field(default_factory=_lease_expires_iso)
     galph_commit: Optional[str] = None
     ralph_commit: Optional[str] = None
+    last_prompt: Optional[str] = None
 
     @staticmethod
     def read(path: str) -> "OrchestrationState":
@@ -45,6 +46,7 @@ class OrchestrationState:
             lease_expires_at=str(data.get("lease_expires_at", _lease_expires_iso())),
             galph_commit=data.get("galph_commit"),
             ralph_commit=data.get("ralph_commit"),
+            last_prompt=data.get("last_prompt"),
         )
 
     def write(self, path: str) -> None:
@@ -77,4 +79,3 @@ class OrchestrationState:
             self.ralph_commit = ralph_commit
         self.last_update = _utc_now_iso()
         self.lease_expires_at = _lease_expires_iso()
-

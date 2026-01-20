@@ -13,7 +13,8 @@ import shutil
 from .state import OrchestrationState
 from .git_bus import safe_pull, add, commit, push_to, short_head, assert_on_branch, current_branch, has_unpushed_commits, push_with_rebase
 from .autocommit import autocommit_reports
-from .config import load_config, stream_to_text_script, claude_cli_default
+from .config import load_config, claude_cli_default
+from .router import log_router_decision, resolve_prompt_path, select_prompt_with_mode
 
 
 def _log_file(prefix: str) -> Path:
@@ -136,6 +137,26 @@ def main() -> int:
     ap.add_argument("--branch", type=str, default=os.getenv("ORCHESTRATION_BRANCH", ""), help="Expected Git branch to operate on")
     ap.add_argument("--prompt", type=str, default=os.getenv("SUPERVISOR_PROMPT", ""),
                     help="Prompt file name (without path), e.g. 'spec_reviewer'. Overrides supervisor_prompt in config.")
+    ap.add_argument("--use-router", dest="use_router", action="store_true",
+                    help="Enable router-based prompt selection (overrides --prompt).")
+    ap.add_argument("--no-router", dest="use_router", action="store_false",
+                    help="Disable router prompt selection even if config enables it.")
+    ap.set_defaults(use_router=cfg.router_enabled)
+    ap.add_argument("--router-prompt", type=str, default=os.getenv("ROUTER_PROMPT", cfg.router_prompt or ""),
+                    help="Router prompt file name (relative to prompts_dir) for override decisions.")
+    ap.add_argument("--router-review-every-n", type=int,
+                    default=int(os.getenv("ROUTER_REVIEW_EVERY_N", str(cfg.router_review_every_n))))
+    ap.add_argument("--router-allowlist", type=str,
+                    default=os.getenv("ROUTER_ALLOWLIST", ",".join(cfg.router_allowlist)))
+    ap.add_argument("--router-prompt-supervisor", type=str,
+                    default=os.getenv("ROUTER_PROMPT_SUPERVISOR", cfg.supervisor_prompt))
+    ap.add_argument("--router-prompt-main", type=str,
+                    default=os.getenv("ROUTER_PROMPT_MAIN", cfg.main_prompt))
+    ap.add_argument("--router-prompt-reviewer", type=str,
+                    default=os.getenv("ROUTER_PROMPT_REVIEWER", cfg.reviewer_prompt))
+    ap.add_argument("--router-mode", type=str,
+                    default=os.getenv("ROUTER_MODE", cfg.router_mode),
+                    help="Router mode: router_default, router_first, router_only.")
     ap.add_argument("--verbose", action="store_true", help="Print state changes to console during polling")
     ap.add_argument("--heartbeat-secs", type=int, default=int(os.getenv("HEARTBEAT_SECS", "0")), help="Console heartbeat interval while polling (0=off)")
     ap.add_argument("--logdir", type=Path, default=Path("logs"), help="Base directory for per-iteration logs (default: logs/)")
@@ -250,7 +271,7 @@ def main() -> int:
         out-of-sync submodule worktrees (pointer drift).
         """
         try:
-            from subprocess import run, PIPE
+            from subprocess import run
             cp1 = run(["git", "submodule", "sync", "--recursive"], capture_output=True, text=True)
             if log_func and (cp1.stdout or cp1.stderr):
                 log_func((cp1.stdout or "") + (cp1.stderr or ""))
@@ -424,10 +445,83 @@ def main() -> int:
                 f.write(msg + "\n")
         return _log
 
+    def _router_prompt_map() -> dict[str, str]:
+        prompt_map = {
+            "galph": args.router_prompt_supervisor,
+            "ralph": args.router_prompt_main,
+        }
+        if args.router_prompt_reviewer:
+            prompt_map["reviewer"] = args.router_prompt_reviewer
+        return prompt_map
+
+    def _router_allowlist() -> list[str] | None:
+        allowlist = [item.strip() for item in args.router_allowlist.split(",") if item.strip()]
+        return allowlist or None
+
+    def _router_state(iteration_override: int | None = None) -> OrchestrationState:
+        if args.state_file.exists():
+            state = OrchestrationState.read(str(args.state_file))
+        else:
+            state = OrchestrationState()
+        if not args.sync_via_git:
+            state.expected_actor = "galph"
+            if iteration_override is not None:
+                state.iteration = iteration_override
+        return state
+
+    def _run_router_prompt(cmd: list[str], prompt_path: Path, logger) -> str:
+        from subprocess import run, PIPE
+        logger(f"[router] Running router prompt: {prompt_path}")
+        try:
+            with open(prompt_path, "rb") as fin:
+                cp = run(cmd, stdin=fin, stdout=PIPE, stderr=PIPE)
+        except Exception as exc:
+            raise RuntimeError(f"Router prompt execution failed: {exc}") from exc
+        stdout = cp.stdout.decode("utf-8", errors="replace")
+        stderr = cp.stderr.decode("utf-8", errors="replace")
+        if stderr.strip():
+            logger(f"[router] stderr: {stderr.strip()}")
+        if cp.returncode != 0:
+            raise RuntimeError(f"Router prompt failed with rc={cp.returncode}")
+        return stdout
+
+    def _select_prompt(
+        cmd: list[str],
+        logger,
+        *,
+        iteration_override: int | None = None,
+    ) -> tuple[Path, OrchestrationState, str | None]:
+        if not args.use_router:
+            prompt_name = args.prompt if args.prompt else cfg.supervisor_prompt
+            if not prompt_name.endswith(".md"):
+                prompt_name = f"{prompt_name}.md"
+            prompt_path = cfg.prompts_dir / prompt_name
+            return prompt_path, OrchestrationState(), None
+
+        state = _router_state(iteration_override)
+        prompt_map = _router_prompt_map()
+        allowlist = _router_allowlist()
+        router_output = None
+        if args.router_prompt:
+            router_prompt_path = resolve_prompt_path(args.router_prompt, cfg.prompts_dir)
+            if not router_prompt_path.exists():
+                raise FileNotFoundError(f"Router prompt file not found: {router_prompt_path}")
+            router_output = _run_router_prompt(cmd, router_prompt_path, logger)
+        decision = select_prompt_with_mode(
+            state,
+            prompt_map,
+            args.router_review_every_n,
+            allowlist=allowlist,
+            prompts_dir=cfg.prompts_dir,
+            router_mode=args.router_mode,
+            router_output=router_output,
+        )
+        log_router_decision(logger, state, decision)
+        prompt_path = resolve_prompt_path(decision.selected_prompt, cfg.prompts_dir)
+        return prompt_path, state, decision.selected_prompt
+
     # Resolve execution command per --agent (Claude vs Codex)
     def _claude_cmd() -> list[str] | None:
-        stream_script = stream_to_text_script()
-
         def _fmt(path: Path | str) -> list[str]:
             quoted = str(path).replace('"', '\\"')
             # Use plain text output for direct streaming without JSON parsing
@@ -495,12 +589,6 @@ def main() -> int:
     else:
         branch_target = current_branch()
 
-    # Resolve prompt file: CLI --prompt overrides config
-    prompt_name = args.prompt if args.prompt else cfg.supervisor_prompt
-    if not prompt_name.endswith(".md"):
-        prompt_name = f"{prompt_name}.md"
-    prompt_file = cfg.prompts_dir / prompt_name
-
     def _check_exit_signal() -> tuple[bool, str]:
         """Check if state file has exit signal. Returns (should_exit, reason)."""
         if args.state_file.exists():
@@ -531,6 +619,18 @@ def main() -> int:
                 with open(iter_log_path, "a", encoding="utf-8") as f:
                     f.write(f"ERROR: {e}\n")
                 print(f"[supervisor] ERROR: {e}")
+                return 2
+            try:
+                prompt_file, _, _ = _select_prompt(cmd, make_logger(iter_log_path), iteration_override=_ + 1)
+            except Exception as e:
+                with open(iter_log_path, "a", encoding="utf-8") as f:
+                    f.write(f"ERROR: {e}\n")
+                print(f"[supervisor] ERROR: {e}")
+                return 2
+            if not prompt_file.exists():
+                with open(iter_log_path, "a", encoding="utf-8") as f:
+                    f.write(f"ERROR: prompt file not found: {prompt_file}\n")
+                print(f"[supervisor] ERROR: prompt file not found: {prompt_file}")
                 return 2
             rc = tee_run(cmd, prompt_file, iter_log_path)
             if rc != 0:
@@ -641,14 +741,6 @@ def main() -> int:
                 last_hb = time.time()
             time.sleep(args.poll_interval)
 
-        # Mark running
-        st = OrchestrationState.read(str(args.state_file))
-        st.status = "running-galph"
-        st.write(str(args.state_file))
-        add([str(args.state_file)])
-        commit(f"[SYNC i={st.iteration}] actor=galph status=running")
-        push_to(branch_target, logp)
-
         # Execute one supervisor iteration
         try:
             cmd = _resolve_cmd()
@@ -656,6 +748,24 @@ def main() -> int:
             logp(f"ERROR: {e}")
             print(f"[sync] ERROR: {e}")
             return 2
+        try:
+            prompt_file, _, selected_prompt = _select_prompt(cmd, logp)
+        except Exception as e:
+            logp(f"ERROR: {e}")
+            print(f"[sync] ERROR: {e}")
+            return 2
+        if not prompt_file.exists():
+            logp(f"ERROR: prompt file not found: {prompt_file}")
+            return 2
+
+        st = OrchestrationState.read(str(args.state_file))
+        if args.use_router:
+            st.last_prompt = selected_prompt
+        st.status = "running-galph"
+        st.write(str(args.state_file))
+        add([str(args.state_file)])
+        commit(f"[SYNC i={st.iteration}] actor=galph status=running")
+        push_to(branch_target, logp)
 
         rc = tee_run(cmd, prompt_file, iter_log)
 
