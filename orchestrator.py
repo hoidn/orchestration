@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,6 +42,32 @@ def _prompt_map(supervisor_prompt: str, main_prompt: str, reviewer_prompt: str) 
     if reviewer_prompt:
         prompt_map["reviewer"] = reviewer_prompt
     return prompt_map
+
+
+def _argv_has_flag(argv: list[str], flag: str) -> bool:
+    return any(token == flag or token.startswith(f"{flag}=") for token in argv)
+
+
+def _argv_flag_value(argv: list[str], flag: str) -> str | None:
+    for idx, token in enumerate(argv):
+        if token == flag and idx + 1 < len(argv):
+            return argv[idx + 1]
+        if token.startswith(f"{flag}="):
+            return token.split("=", 1)[1]
+    return None
+
+
+def _apply_role_prompt_override(role: str) -> None:
+    if _argv_has_flag(sys.argv, "--prompt"):
+        return
+    if role == "galph":
+        value = _argv_flag_value(sys.argv, "--prompt-supervisor")
+        if value:
+            os.environ["SUPERVISOR_PROMPT"] = value
+    elif role == "ralph":
+        value = _argv_flag_value(sys.argv, "--prompt-main")
+        if value:
+            os.environ["LOOP_PROMPT"] = value
 
 
 def build_combined_contexts(
@@ -89,11 +116,27 @@ def run_combined_iteration(
     ralph_logger: Logger,
     state_writer: StateWriter,
 ) -> int:
+    def _fail(role: str, message: str) -> int:
+        if role == "galph":
+            logger = galph_logger
+        else:
+            logger = ralph_logger
+        logger(f"[orchestrator] ERROR: {message}")
+        if role == "galph":
+            state.stamp(expected_actor="galph", status="failed", galph_commit=short_head())
+        else:
+            state.stamp(expected_actor="ralph", status="failed", ralph_commit=short_head())
+        state_writer(state)
+        return 2
+
     state.expected_actor = "galph"
     state.status = "running-galph"
     state_writer(state)
 
-    galph_result = run_turn("galph", state, galph_ctx, galph_executor, galph_logger)
+    try:
+        galph_result = run_turn("galph", state, galph_ctx, galph_executor, galph_logger)
+    except Exception as exc:
+        return _fail("galph", f"galph turn failed: {exc}")
     if galph_result.returncode != 0:
         state.stamp(expected_actor="galph", status="failed", galph_commit=short_head())
         state_writer(state)
@@ -105,7 +148,10 @@ def run_combined_iteration(
     state.status = "running-ralph"
     state_writer(state)
 
-    ralph_result = run_turn("ralph", state, ralph_ctx, ralph_executor, ralph_logger)
+    try:
+        ralph_result = run_turn("ralph", state, ralph_ctx, ralph_executor, ralph_logger)
+    except Exception as exc:
+        return _fail("ralph", f"ralph turn failed: {exc}")
     if ralph_result.returncode != 0:
         state.stamp(expected_actor="ralph", status="failed", ralph_commit=short_head())
         state_writer(state)
@@ -229,13 +275,28 @@ def _run_combined(args, cfg) -> int:
         galph_logger = _make_logger(galph_log)
         ralph_logger = _make_logger(ralph_log)
 
+        def _write_state(st: OrchestrationState) -> None:
+            st.write(str(state_file))
+
+        def _fail(role: str, message: str) -> int:
+            logger = galph_logger if role == "galph" else ralph_logger
+            logger(f"[orchestrator] ERROR: {message}")
+            if role == "galph":
+                state.stamp(expected_actor="galph", status="failed", galph_commit=short_head())
+            else:
+                state.stamp(expected_actor="ralph", status="failed", ralph_commit=short_head())
+            _write_state(state)
+            return 2
+
         router_output = None
         if args.use_router and args.router_prompt:
             router_prompt_path = resolve_prompt_path(args.router_prompt, cfg.prompts_dir)
             if not router_prompt_path.exists():
-                galph_logger(f"ERROR: router prompt not found: {router_prompt_path}")
-                return 2
-            router_output = run_router_prompt(cmd, router_prompt_path, galph_logger)
+                return _fail("galph", f"router prompt not found: {router_prompt_path}")
+            try:
+                router_output = run_router_prompt(cmd, router_prompt_path, galph_logger)
+            except Exception as exc:
+                return _fail("galph", f"router prompt failed: {exc}")
 
         allowlist = _parse_allowlist(args.router_allowlist)
         galph_ctx, ralph_ctx = build_combined_contexts(
@@ -255,9 +316,6 @@ def _run_combined(args, cfg) -> int:
 
         def _ralph_exec(prompt_path: Path) -> int:
             return tee_run(cmd, prompt_path, ralph_log)
-
-        def _write_state(st: OrchestrationState) -> None:
-            st.write(str(state_file))
 
         rc = run_combined_iteration(
             state=state,
@@ -287,7 +345,7 @@ def main() -> int:
     ap.add_argument("--sync-loops", type=int, default=int(os.getenv("SYNC_LOOPS", 20)))
     ap.add_argument("--poll-interval", type=int, default=int(os.getenv("POLL_INTERVAL", 5)))
     ap.add_argument("--state-file", type=Path, default=Path(os.getenv("STATE_FILE", str(cfg.state_file))))
-    ap.add_argument("--logdir", type=Path, default=Path("logs"))
+    ap.add_argument("--logdir", type=Path, default=cfg.logs_dir)
     ap.add_argument("--branch", type=str, default=os.getenv("ORCHESTRATION_BRANCH", ""))
     ap.add_argument("--claude-cmd", type=str, default=os.getenv("CLAUDE_CMD", ""))
     ap.add_argument("--codex-cmd", type=str, default=os.getenv("CODEX_CMD", "codex"))
@@ -352,6 +410,7 @@ def main() -> int:
         if not args.sync_via_git:
             print("[orchestrator] ERROR: role mode requires --sync-via-git.")
             return 2
+        _apply_role_prompt_override(args.role)
         if args.role == "galph":
             return supervisor_main()
         return loop_main()

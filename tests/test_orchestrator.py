@@ -180,3 +180,91 @@ def test_router_disabled_uses_actor_prompts(tmp_path: Path) -> None:
 
     assert rc == 0
     assert executed == ["supervisor.md", "main.md"]
+
+
+def test_combined_missing_prompt_marks_failed(tmp_path: Path) -> None:
+    prompts_dir = tmp_path / "prompts"
+    prompts_dir.mkdir()
+    for name in ("main.md", "reviewer.md"):
+        _write_prompt(prompts_dir / name)
+
+    state = OrchestrationState(iteration=1, expected_actor="galph", status="idle")
+    allowlist = ["supervisor.md", "main.md", "reviewer.md"]
+
+    galph_ctx, ralph_ctx = build_combined_contexts(
+        prompts_dir=prompts_dir,
+        supervisor_prompt="supervisor.md",
+        main_prompt="main.md",
+        reviewer_prompt="reviewer.md",
+        allowlist=allowlist,
+        review_every_n=0,
+        router_mode="router_default",
+        router_output=None,
+        use_router=False,
+    )
+
+    errors: list[str] = []
+
+    def _log(msg: str) -> None:
+        errors.append(msg)
+
+    rc = run_combined_iteration(
+        state=state,
+        galph_ctx=galph_ctx,
+        ralph_ctx=ralph_ctx,
+        galph_executor=lambda _: 0,
+        ralph_executor=lambda _: 0,
+        galph_logger=_log,
+        ralph_logger=_log,
+        state_writer=lambda _: None,
+    )
+
+    assert rc == 2
+    assert state.status == "failed"
+    assert state.expected_actor == "galph"
+    assert state.iteration == 1
+    assert any("galph turn failed" in msg for msg in errors)
+
+
+def test_router_only_without_output_marks_failed(tmp_path: Path) -> None:
+    prompts_dir = tmp_path / "prompts"
+    prompts_dir.mkdir()
+    for name in ("supervisor.md", "main.md", "reviewer.md"):
+        _write_prompt(prompts_dir / name)
+
+    state = OrchestrationState(iteration=1, expected_actor="galph", status="idle")
+    allowlist = ["supervisor.md", "main.md", "reviewer.md"]
+
+    galph_ctx, ralph_ctx = build_combined_contexts(
+        prompts_dir=prompts_dir,
+        supervisor_prompt="supervisor.md",
+        main_prompt="main.md",
+        reviewer_prompt="reviewer.md",
+        allowlist=allowlist,
+        review_every_n=0,
+        router_mode="router_only",
+        router_output=None,
+        use_router=True,
+    )
+
+    errors: list[str] = []
+
+    def _log(msg: str) -> None:
+        errors.append(msg)
+
+    rc = run_combined_iteration(
+        state=state,
+        galph_ctx=galph_ctx,
+        ralph_ctx=ralph_ctx,
+        galph_executor=lambda _: 0,
+        ralph_executor=lambda _: 0,
+        galph_logger=_log,
+        ralph_logger=_log,
+        state_writer=lambda _: None,
+    )
+
+    assert rc == 2
+    assert state.status == "failed"
+    assert state.expected_actor == "galph"
+    assert state.iteration == 1
+    assert any("router_only" in msg for msg in errors)
