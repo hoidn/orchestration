@@ -55,6 +55,16 @@ router:
     - supervisor.md
     - main.md
     - reviewer.md
+
+# Agent dispatch (optional)
+agent:
+  default: auto  # auto | claude | codex
+  roles:
+    galph: claude
+    ralph: codex
+  prompts:
+    supervisor.md: codex
+    main.md: claude
 ```
 
 The config is loaded by searching upward from CWD for `orchestration.yaml`. If not found, sensible defaults are used.
@@ -136,6 +146,30 @@ Deterministic routing can select the per-iteration prompt using `sync/state.json
 
 Implementation lives in `scripts/orchestration/router.py` with a thin wrapper `scripts/orchestration/router.sh`.
 
+## Agent Dispatch (optional)
+
+You can route different CLIs per role or per prompt. Resolution precedence:
+
+1. CLI prompt map (`--agent-prompt`)
+2. CLI role map (`--agent-role`)
+3. YAML prompt map (`agent.prompts`)
+4. YAML role map (`agent.roles`)
+5. Default (`--agent` or `agent.default`)
+
+Prompt keys are normalized to `.md` and matched relative to `prompts_dir` (e.g., `supervisor.md`, `subdir/debug.md`).
+
+CLI usage examples:
+```bash
+./orchestrator.sh --mode combined --agent codex \
+  --agent-role galph=claude,ralph=codex \
+  --agent-prompt reviewer.md=claude
+```
+
+Environment variables:
+- Combined: `ORCHESTRATOR_AGENT_ROLE`, `ORCHESTRATOR_AGENT_PROMPT`
+- Supervisor: `SUPERVISOR_AGENT_ROLE`, `SUPERVISOR_AGENT_PROMPT`
+- Loop: `LOOP_AGENT_ROLE`, `LOOP_AGENT_PROMPT`
+
 ### Doc/meta auto‑commit whitelist
 - The supervisor auto‑stages/commits a limited set of doc/meta paths at end of turn to keep the tree clean.
 - Default whitelist includes: `input.md`, `galph_memory.md`, `docs/fix_plan.md`, `plans/**/*.md`, `prompts/**/*.md`, and core Git meta files: `.gitignore`, `.gitmodules`, `.gitattributes`.
@@ -185,6 +219,7 @@ Router notes for combined mode:
 ### Combined auto-commit (local-only)
 - Combined mode can auto-commit doc/meta, reports, and tracked outputs using supervisor defaults.
 - Dirty non-whitelist paths are logged as warnings only (no hard failure).
+- Auto-commit messages include the iteration tag (for example, `iter=00017`).
 - Use `--commit-dry-run` to log what would be committed without staging.
 - Use `--no-git` to skip all git operations in combined mode.
 

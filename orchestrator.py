@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import sys
 import time
 from dataclasses import dataclass
@@ -11,7 +10,18 @@ from pathlib import Path, PurePath, PurePosixPath
 from typing import Callable, Optional
 
 from .autocommit import autocommit_docs, autocommit_reports, autocommit_tracked_outputs
-from .config import load_config, claude_cli_default
+from .agent_dispatch import (
+    AgentConfig,
+    canonical_prompt_key,
+    normalize_prompt_map,
+    normalize_role_map,
+    parse_agent_map,
+    prompt_key_from_path,
+    resolve_cmd,
+    select_agent_cmd,
+    normalize_role_key,
+)
+from .config import load_config
 from .git_bus import assert_on_branch, current_branch, short_head
 from .loop import main as loop_main
 from .router import resolve_prompt_path
@@ -75,7 +85,19 @@ def _build_autocommit_config(args, cfg) -> CombinedAutoCommitConfig:
     )
 
 
-def run_combined_autocommit(*, role: str, logger: Logger, config: CombinedAutoCommitConfig) -> None:
+def _format_iteration_tag(iteration: Optional[int]) -> str:
+    if iteration is None:
+        return ""
+    return f" (iter={iteration:05d})"
+
+
+def run_combined_autocommit(
+    *,
+    role: str,
+    logger: Logger,
+    config: CombinedAutoCommitConfig,
+    iteration: Optional[int] = None,
+) -> None:
     if config.no_git:
         logger(f"[autocommit:{role}] Skipping auto-commit (--no-git)")
         return
@@ -93,6 +115,8 @@ def run_combined_autocommit(*, role: str, logger: Logger, config: CombinedAutoCo
             return True
         return False
 
+    iter_tag = _format_iteration_tag(iteration)
+
     if config.auto_commit_reports:
         try:
             autocommit_reports(
@@ -101,7 +125,7 @@ def run_combined_autocommit(*, role: str, logger: Logger, config: CombinedAutoCo
                 max_total_bytes=config.max_report_total_bytes,
                 force_add=config.force_add_reports,
                 logger=logger,
-                commit_message_prefix="SUPERVISOR AUTO: reports evidence — tests: not run",
+                commit_message_prefix=f"SUPERVISOR AUTO: reports evidence — tests: not run{iter_tag}",
                 skip_predicate=_skip_reports,
                 allowed_path_globs=config.report_path_globs,
                 dry_run=config.dry_run,
@@ -117,7 +141,7 @@ def run_combined_autocommit(*, role: str, logger: Logger, config: CombinedAutoCo
                 max_file_bytes=config.max_tracked_output_file_bytes,
                 max_total_bytes=config.max_tracked_output_total_bytes,
                 logger=logger,
-                commit_message_prefix="SUPERVISOR AUTO: tracked outputs — tests: not run",
+                commit_message_prefix=f"SUPERVISOR AUTO: tracked outputs — tests: not run{iter_tag}",
                 dry_run=config.dry_run,
             )
         except Exception as exc:
@@ -129,7 +153,7 @@ def run_combined_autocommit(*, role: str, logger: Logger, config: CombinedAutoCo
                 whitelist_globs=config.doc_whitelist,
                 max_file_bytes=config.max_autocommit_bytes,
                 logger=logger,
-                commit_message_prefix="SUPERVISOR AUTO: doc/meta hygiene — tests: not run",
+                commit_message_prefix=f"SUPERVISOR AUTO: doc/meta hygiene — tests: not run{iter_tag}",
                 dry_run=config.dry_run,
                 ignore_paths=[str(config.state_file)],
             )
@@ -301,60 +325,6 @@ def _check_exit_signal(state_file: Path) -> tuple[bool, str]:
     return False, ""
 
 
-def _resolve_cmd(agent: str, claude_cmd: str, codex_cmd: str) -> list[str]:
-    def _claude_cmd() -> list[str] | None:
-        def _fmt(path: Path | str) -> list[str]:
-            quoted = str(path).replace('"', '\\"')
-            cmd_str = f'"{quoted}" -p --dangerously-skip-permissions --verbose --output-format text'
-            return ["/bin/bash", "-lc", cmd_str]
-
-        if claude_cmd:
-            path = Path(claude_cmd)
-            if path.is_file() and os.access(str(path), os.X_OK):
-                return _fmt(path)
-            which = shutil.which(claude_cmd)
-            if which:
-                return _fmt(which)
-
-        default_cli = claude_cli_default()
-        if default_cli:
-            return _fmt(default_cli)
-        return None
-
-    def _codex_cmd() -> list[str] | None:
-        codex_bin = shutil.which(codex_cmd) or codex_cmd
-        if not codex_bin:
-            return None
-        return [
-            codex_bin,
-            "exec",
-            "-m",
-            "gpt-5-codex",
-            "-c",
-            "model_reasoning_effort=high",
-            "--dangerously-bypass-approvals-and-sandbox",
-        ]
-
-    if agent == "claude":
-        cmd = _claude_cmd()
-        if not cmd:
-            raise RuntimeError("Claude CLI not found; set --claude-cmd or choose --agent=codex.")
-        return cmd
-    if agent == "codex":
-        cmd = _codex_cmd()
-        if not cmd:
-            raise RuntimeError("Codex CLI not found; set --codex-cmd or choose --agent=claude.")
-        return cmd
-
-    cmd = _claude_cmd()
-    if cmd:
-        return cmd
-    cmd = _codex_cmd()
-    if cmd:
-        return cmd
-    raise RuntimeError("Neither Claude nor Codex CLI could be resolved; configure --claude-cmd/--codex-cmd.")
-
-
 def _run_combined(args, cfg) -> int:
     if args.sync_via_git:
         print("[orchestrator] ERROR: combined mode does not support --sync-via-git.")
@@ -371,8 +341,24 @@ def _run_combined(args, cfg) -> int:
     state = OrchestrationState.read(str(state_file)) if state_file.exists() else OrchestrationState()
 
     try:
-        cmd = _resolve_cmd(args.agent, args.claude_cmd, args.codex_cmd)
-    except RuntimeError as exc:
+        cli_role_map = parse_agent_map(args.agent_role, normalize_role_key)
+        cli_prompt_map = parse_agent_map(
+            args.agent_prompt,
+            lambda key: canonical_prompt_key(key, cfg.prompts_dir),
+        )
+    except ValueError as exc:
+        print(f"[orchestrator] ERROR: {exc}")
+        return 2
+
+    agent_cfg = AgentConfig(
+        default_agent=args.agent,
+        role_map=normalize_role_map(cfg.agent_roles),
+        prompt_map=normalize_prompt_map(cfg.agent_prompts, cfg.prompts_dir),
+        prompts_dir=cfg.prompts_dir,
+    )
+    try:
+        router_cmd = resolve_cmd(args.agent, args.claude_cmd, args.codex_cmd)
+    except (RuntimeError, ValueError) as exc:
         print(f"[orchestrator] ERROR: {exc}")
         return 2
 
@@ -420,7 +406,7 @@ def _run_combined(args, cfg) -> int:
             if not router_prompt_path.exists():
                 return _fail("galph", f"router prompt not found: {router_prompt_path}")
             try:
-                router_output = run_router_prompt(cmd, router_prompt_path, galph_logger)
+                router_output = run_router_prompt(router_cmd, router_prompt_path, galph_logger)
             except Exception as exc:
                 return _fail("galph", f"router prompt failed: {exc}")
 
@@ -437,14 +423,40 @@ def _run_combined(args, cfg) -> int:
             use_router=args.use_router,
         )
 
+        def _exec_for(role: str, prompt_path: Path, logger: Logger, log_path: Path) -> int:
+            prompt_key = prompt_key_from_path(prompt_path, cfg.prompts_dir)
+            try:
+                selection = select_agent_cmd(
+                    role,
+                    prompt_key,
+                    agent_cfg,
+                    cli_role_map,
+                    cli_prompt_map,
+                    args.claude_cmd,
+                    args.codex_cmd,
+                )
+            except Exception as exc:
+                logger(f"[agent] ERROR: {exc}")
+                raise
+            logger(
+                "[agent] role=%s prompt=%s agent=%s cmd=%s"
+                % (role, prompt_key, selection.agent, " ".join(selection.cmd))
+            )
+            return tee_run(selection.cmd, prompt_path, log_path)
+
         def _galph_exec(prompt_path: Path) -> int:
-            return tee_run(cmd, prompt_path, galph_log)
+            return _exec_for("galph", prompt_path, galph_logger, galph_log)
 
         def _ralph_exec(prompt_path: Path) -> int:
-            return tee_run(cmd, prompt_path, ralph_log)
+            return _exec_for("ralph", prompt_path, ralph_logger, ralph_log)
 
         def _post_turn(role: str, _: OrchestrationState, logger: Logger) -> None:
-            run_combined_autocommit(role=role, logger=logger, config=auto_commit_cfg)
+            run_combined_autocommit(
+                role=role,
+                logger=logger,
+                config=auto_commit_cfg,
+                iteration=iter_num,
+            )
 
         rc = run_combined_iteration(
             state=state,
@@ -486,9 +498,11 @@ def main() -> int:
         "--agent",
         type=str,
         choices=["auto", "claude", "codex"],
-        default=os.getenv("ORCHESTRATOR_AGENT", "auto"),
+        default=os.getenv("ORCHESTRATOR_AGENT", cfg.agent_default),
         help="Model CLI used for combined orchestrator (auto: prefer Claude, fallback Codex).",
     )
+    ap.add_argument("--agent-role", type=str, default=os.getenv("ORCHESTRATOR_AGENT_ROLE", ""))
+    ap.add_argument("--agent-prompt", type=str, default=os.getenv("ORCHESTRATOR_AGENT_PROMPT", ""))
     ap.add_argument("--prompt-supervisor", type=str, default=os.getenv("SUPERVISOR_PROMPT", cfg.supervisor_prompt))
     ap.add_argument("--prompt-main", type=str, default=os.getenv("LOOP_PROMPT", cfg.main_prompt))
     ap.add_argument("--prompt-reviewer", type=str, default=os.getenv("REVIEWER_PROMPT", cfg.reviewer_prompt))

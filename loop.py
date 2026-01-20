@@ -2,14 +2,24 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import time
 from datetime import datetime
 from pathlib import Path, PurePath
+from .agent_dispatch import (
+    AgentConfig,
+    canonical_prompt_key,
+    normalize_prompt_map,
+    normalize_role_key,
+    normalize_role_map,
+    parse_agent_map,
+    prompt_key_from_path,
+    select_agent_cmd,
+    resolve_cmd,
+)
 from .state import OrchestrationState
 from .git_bus import safe_pull, add, commit, push_to, short_head, has_unpushed_commits, assert_on_branch, current_branch, push_with_rebase
 from .autocommit import autocommit_reports
-from .config import load_config, claude_cli_default
+from .config import load_config
 from .runner import RouterContext, log_file, run_router_prompt, select_prompt, tee_run
 from .router import resolve_prompt_path
 
@@ -27,8 +37,10 @@ def main() -> int:
     ap.add_argument("--state-file", type=Path, default=Path(os.getenv("STATE_FILE", str(cfg.state_file))))
     ap.add_argument("--claude-cmd", type=str, default=os.getenv("CLAUDE_CMD", ""))
     ap.add_argument("--codex-cmd", type=str, default=os.getenv("CODEX_CMD", "codex"))
-    ap.add_argument("--agent", type=str, choices=["auto", "claude", "codex"], default=os.getenv("LOOP_AGENT", "auto"),
+    ap.add_argument("--agent", type=str, choices=["auto", "claude", "codex"], default=os.getenv("LOOP_AGENT", cfg.agent_default),
                     help="Model CLI used for engineer loops (auto: prefer Claude, fallback Codex).")
+    ap.add_argument("--agent-role", type=str, default=os.getenv("LOOP_AGENT_ROLE", ""))
+    ap.add_argument("--agent-prompt", type=str, default=os.getenv("LOOP_AGENT_PROMPT", ""))
     ap.add_argument("--prompt", type=str, default=os.getenv("LOOP_PROMPT", "main"),
                     help="Prompt file name (without path), e.g. 'spec_writer' or 'main' (default: main)")
     ap.add_argument("--use-router", dest="use_router", action="store_true",
@@ -78,6 +90,23 @@ def main() -> int:
                     help="Comma-separated glob allowlist for report auto-commit paths (default: none)")
 
     args, unknown = ap.parse_known_args()
+
+    try:
+        cli_role_map = parse_agent_map(args.agent_role, normalize_role_key)
+        cli_prompt_map = parse_agent_map(
+            args.agent_prompt,
+            lambda key: canonical_prompt_key(key, cfg.prompts_dir),
+        )
+    except ValueError as exc:
+        print(f"[loop] ERROR: {exc}")
+        return 2
+
+    agent_cfg = AgentConfig(
+        default_agent=args.agent,
+        role_map=normalize_role_map(cfg.agent_roles),
+        prompt_map=normalize_prompt_map(cfg.agent_prompts, cfg.prompts_dir),
+        prompts_dir=cfg.prompts_dir,
+    )
 
     log_path = log_file("claudelog")
     report_path_globs = tuple(p.strip() for p in args.report_path_globs.split(',') if p.strip())
@@ -137,8 +166,16 @@ def main() -> int:
                 state.iteration = iteration_override
         return state
 
+    router_cmd: list[str] | None = None
+    if args.use_router and args.router_prompt:
+        try:
+            router_cmd = resolve_cmd(args.agent, args.claude_cmd, args.codex_cmd)
+        except (RuntimeError, ValueError) as exc:
+            print(f"[loop] ERROR: {exc}")
+            return 2
+
     def _select_prompt(
-        cmd: list[str],
+        cmd: list[str] | None,
         logger,
         *,
         iteration_override: int | None = None,
@@ -146,13 +183,15 @@ def main() -> int:
         if not args.use_router:
             prompt_name = args.prompt if args.prompt.endswith(".md") else f"{args.prompt}.md"
             prompt_path = cfg.prompts_dir / prompt_name
-            return prompt_path, OrchestrationState(), None
+            return prompt_path, OrchestrationState(), prompt_name
 
         state = _router_state(iteration_override)
         prompt_map = _router_prompt_map()
         allowlist = _router_allowlist()
         router_output = None
         if args.router_prompt:
+            if cmd is None:
+                raise RuntimeError("Router prompt requires agent CLI but no command was resolved.")
             router_prompt_path = resolve_prompt_path(args.router_prompt, cfg.prompts_dir)
             if not router_prompt_path.exists():
                 raise FileNotFoundError(f"Router prompt file not found: {router_prompt_path}")
@@ -169,6 +208,29 @@ def main() -> int:
         )
         selection = select_prompt(state, ctx, logger)
         return selection.prompt_path, state, selection.selected_prompt
+
+    def _resolve_agent_cmd(
+        role: str,
+        prompt_path: Path,
+        selected_prompt: str | None,
+        logger,
+    ):
+        prompt_key = selected_prompt or prompt_key_from_path(prompt_path, cfg.prompts_dir)
+        prompt_key = canonical_prompt_key(prompt_key, cfg.prompts_dir)
+        selection = select_agent_cmd(
+            role,
+            prompt_key,
+            agent_cfg,
+            cli_role_map,
+            cli_prompt_map,
+            args.claude_cmd,
+            args.codex_cmd,
+        )
+        logger(
+            "[agent] role=%s prompt=%s agent=%s cmd=%s"
+            % (role, prompt_key, selection.agent, " ".join(selection.cmd))
+        )
+        return selection
 
     def _pull_with_error(logger, ctx: str) -> bool:
         buf: list[str] = []
@@ -271,74 +333,9 @@ def main() -> int:
                     return 1
                 time.sleep(args.poll_interval)
 
-        # Resolve execution command per --agent (Claude vs Codex)
-        def _claude_cmd() -> list[str] | None:
-            def _fmt(path: Path | str) -> list[str]:
-                quoted = str(path).replace('"', '\\"')
-                # Use plain text output for direct streaming without JSON parsing
-                cmd_str = f'"{quoted}" -p --dangerously-skip-permissions --verbose --output-format text'
-                return ["/bin/bash", "-lc", cmd_str]
-
-            # First, honor explicit CLI override if provided.
-            cc = args.claude_cmd
-            if cc:
-                p = Path(cc)
-                if p.is_file() and os.access(str(p), os.X_OK):
-                    return _fmt(p)
-                which = shutil.which(cc)
-                if which:
-                    return _fmt(which)
-
-            # Use portable default lookup (repo-local, home-local, PATH)
-            default_cli = claude_cli_default()
-            if default_cli:
-                return _fmt(default_cli)
-            return None
-
-        def _codex_cmd() -> list[str] | None:
-            codex_bin = shutil.which(args.codex_cmd) or args.codex_cmd
-            if not codex_bin:
-                return None
-            return [
-                codex_bin,
-                "exec",
-                "-m",
-                "gpt-5-codex",
-                "-c",
-                "model_reasoning_effort=high",
-                "--dangerously-bypass-approvals-and-sandbox",
-            ]
-
-        def _resolve_cmd() -> list[str]:
-            if args.agent == "claude":
-                cmd = _claude_cmd()
-                if not cmd:
-                    raise RuntimeError("Claude CLI not found; set --claude-cmd or choose --agent=codex.")
-                return cmd
-            if args.agent == "codex":
-                cmd = _codex_cmd()
-                if not cmd:
-                    raise RuntimeError("Codex CLI not found; set --codex-cmd or choose --agent=claude.")
-                return cmd
-
-            cmd = _claude_cmd()
-            if cmd:
-                return cmd
-            cmd = _codex_cmd()
-            if cmd:
-                return cmd
-            raise RuntimeError("Neither Claude nor Codex CLI could be resolved; configure --claude-cmd/--codex-cmd.")
-
-        try:
-            cmd = _resolve_cmd()
-        except RuntimeError as e:
-            logp(f"ERROR: {e}")
-            print(f"[sync] ERROR: {e}")
-            return 2
-
         try:
             prompt_path, _, selected_prompt = _select_prompt(
-                cmd,
+                router_cmd,
                 logp,
                 iteration_override=None if args.sync_via_git else (_ + 1),
             )
@@ -349,6 +346,12 @@ def main() -> int:
 
         if not prompt_path.exists():
             logp(f"ERROR: prompt file not found: {prompt_path}")
+            return 2
+        try:
+            selection = _resolve_agent_cmd("ralph", prompt_path, selected_prompt, logp)
+        except Exception as e:
+            logp(f"ERROR: {e}")
+            print(f"[sync] ERROR: {e}")
             return 2
 
         if args.sync_via_git:
@@ -361,7 +364,7 @@ def main() -> int:
             commit(f"[SYNC i={st.iteration}] actor=ralph status=running")
             push_to(branch_target, logp)
 
-        rc = tee_run(cmd, prompt_path, iter_log)
+        rc = tee_run(selection.cmd, prompt_path, iter_log)
 
         # Auto-commit reports evidence (before stamping) — constrained by extension and size caps
         if args.auto_commit_reports and not args.no_git:

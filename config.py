@@ -40,6 +40,11 @@ class OrchConfig:
     router_allowlist: list[str] = field(default_factory=list)
     router_mode: str = "router_default"
 
+    # Agent dispatch configuration
+    agent_default: str = "auto"
+    agent_roles: dict[str, str] = field(default_factory=dict)
+    agent_prompts: dict[str, str] = field(default_factory=dict)
+
     # State management
     state_file: Path = field(default_factory=lambda: Path("sync/state.json"))
 
@@ -251,6 +256,16 @@ def load_config(config_path: Optional[Path] = None, warn_missing: bool = True) -
             cfg.router_allowlist = list(router["allowlist"])
         if "mode" in router:
             cfg.router_mode = str(router["mode"])
+
+    # Agent dispatch settings (nested section)
+    if "agent" in data:
+        agent = data["agent"] or {}
+        if "default" in agent:
+            cfg.agent_default = str(agent["default"])
+        if "roles" in agent:
+            cfg.agent_roles = dict(agent["roles"])
+        if "prompts" in agent:
+            cfg.agent_prompts = dict(agent["prompts"])
 
     # Parse spec_bootstrap section if present
     if "spec_bootstrap" in data:
