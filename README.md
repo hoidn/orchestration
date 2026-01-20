@@ -88,6 +88,8 @@ spec_bootstrap:
 - Two actors:
   - `supervisor.sh` → `scripts/orchestration/supervisor.py` (galph)
   - `loop.sh` → `scripts/orchestration/loop.py` (ralph)
+- Combined entrypoint:
+  - `orchestrator.sh` → `scripts/orchestration/orchestrator.py` (galph + ralph in one loop)
 - Modes:
   - Async: local, back‑to‑back iterations.
   - Sync via Git: strict turn‑taking using `sync/state.json` committed and pushed between machines.
@@ -151,6 +153,11 @@ Implementation lives in `scripts/orchestration/router.py` with a thin wrapper `s
    ```bash
    ORCHESTRATION_BRANCH=feature/spec-based-2    ./loop.sh --sync-via-git --branch feature/spec-based-2      --sync-loops 20 --prompt main --logdir logs
    ```
+- Optional wrapper (role-gated orchestrator):
+  ```bash
+  ./orchestrator.sh --mode role --role galph --sync-via-git --branch feature/spec-based-2 --sync-loops 20 --logdir logs
+  ./orchestrator.sh --mode role --role ralph --sync-via-git --branch feature/spec-based-2 --sync-loops 20 --logdir logs
+  ```
 - Handshake:
   - Galph writes: `expected_actor=ralph`, `status=waiting-ralph`.
   - Ralph writes: `status=running-ralph`, then on success sets `expected_actor=galph`, `status=complete`, and increments `iteration`.
@@ -162,6 +169,18 @@ Implementation lives in `scripts/orchestration/router.py` with a thin wrapper `s
   ./supervisor.sh --sync-loops 5 --logdir logs
   ./loop.sh --sync-loops 5 --prompt main --logdir logs
   ```
+
+## Combined (single machine)
+
+Run both actors sequentially in a single process:
+
+```bash
+./orchestrator.sh --mode combined --sync-loops 5 --logdir logs
+```
+
+Router notes for combined mode:
+- Review cadence is applied once per iteration (galph only).
+- Router overrides (router prompt output) are applied only to galph; ralph uses deterministic routing.
 
 ## Logging
 - Descriptive per‑iteration logs:

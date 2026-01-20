@@ -1,0 +1,17 @@
+#!/bin/bash
+# Wrapper to run combined orchestrator via Python module.
+# Place this at your project root or symlink to it.
+#
+# Usage: ./orchestrator.sh [args...]
+# Example: ./orchestrator.sh --mode combined --sync-loops 5 --logdir logs
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# If this script is in scripts/orchestration/, run as module from project root
+if [[ "$(basename "$(dirname "$SCRIPT_DIR")")" == "scripts" ]]; then
+    cd "$(dirname "$(dirname "$SCRIPT_DIR")")"
+    exec python -m scripts.orchestration.orchestrator "$@"
+else
+    # Script is at project root, assume scripts/orchestration exists
+    exec python -m scripts.orchestration.orchestrator "$@"
+fi

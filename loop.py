@@ -3,94 +3,15 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
-import sys
 import time
 from datetime import datetime
 from pathlib import Path, PurePath
-from subprocess import Popen, PIPE
 from .state import OrchestrationState
 from .git_bus import safe_pull, add, commit, push_to, short_head, has_unpushed_commits, assert_on_branch, current_branch, push_with_rebase
 from .autocommit import autocommit_reports
 from .config import load_config, claude_cli_default
-from .router import log_router_decision, resolve_prompt_path, select_prompt_with_mode
-
-
-def _log_file(prefix: str) -> Path:
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    Path("tmp").mkdir(parents=True, exist_ok=True)
-    p = Path("tmp") / f"{prefix}{ts}.txt"
-    latest = Path("tmp") / f"{prefix}latest.txt"
-    try:
-        if latest.exists() or latest.is_symlink():
-            latest.unlink()
-        latest.symlink_to(p.name)
-    except Exception:
-        pass
-    return p
-
-
-def tee_run(cmd: list[str], stdin_file: Path | None, log_path: Path) -> int:
-    """Run command with output tee'd to log file using non-blocking I/O."""
-    import select
-
-    fin = open(stdin_file, "rb") if stdin_file else open("/dev/null", "rb")
-    try:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(log_path, "a", encoding="utf-8") as flog:
-            flog.write(f"$ {' '.join(cmd)}\n")
-            flog.flush()
-
-            # Use unbuffered binary mode for real-time streaming
-            proc = Popen(cmd, stdin=fin, stdout=PIPE, stderr=PIPE, bufsize=0)
-
-            stdout_fd = proc.stdout.fileno() if proc.stdout else -1
-            stderr_fd = proc.stderr.fileno() if proc.stderr else -1
-
-            while True:
-                readable, _, _ = select.select(
-                    [fd for fd in [stdout_fd, stderr_fd] if fd >= 0],
-                    [], [], 0.1
-                )
-
-                if stdout_fd in readable and proc.stdout:
-                    chunk = proc.stdout.read(4096)
-                    if chunk:
-                        text = chunk.decode("utf-8", errors="replace")
-                        sys.stdout.write(text)
-                        sys.stdout.flush()
-                        flog.write(text)
-                        flog.flush()
-
-                if stderr_fd in readable and proc.stderr:
-                    chunk = proc.stderr.read(4096)
-                    if chunk:
-                        text = chunk.decode("utf-8", errors="replace")
-                        sys.stderr.write(text)
-                        sys.stderr.flush()
-                        flog.write(text)
-                        flog.flush()
-
-                if proc.poll() is not None:
-                    # Drain remaining output
-                    if proc.stdout:
-                        remaining = proc.stdout.read()
-                        if remaining:
-                            text = remaining.decode("utf-8", errors="replace")
-                            sys.stdout.write(text)
-                            sys.stdout.flush()
-                            flog.write(text)
-                    if proc.stderr:
-                        remaining = proc.stderr.read()
-                        if remaining:
-                            text = remaining.decode("utf-8", errors="replace")
-                            sys.stderr.write(text)
-                            sys.stderr.flush()
-                            flog.write(text)
-                    break
-
-            return proc.returncode
-    finally:
-        fin.close()
+from .runner import RouterContext, log_file, run_router_prompt, select_prompt, tee_run
+from .router import resolve_prompt_path
 
 
 def main() -> int:
@@ -158,7 +79,7 @@ def main() -> int:
 
     args, unknown = ap.parse_known_args()
 
-    log_path = _log_file("claudelog")
+    log_path = log_file("claudelog")
     report_path_globs = tuple(p.strip() for p in args.report_path_globs.split(',') if p.strip())
     logdir_prefix_parts = tuple(part for part in PurePath(args.logdir).parts if part not in {"", "."})
     skip_config_path = Path(os.getenv("REPORT_SKIP_CONFIG", ".reportsignore"))
@@ -216,22 +137,6 @@ def main() -> int:
                 state.iteration = iteration_override
         return state
 
-    def _run_router_prompt(cmd: list[str], prompt_path: Path, logger) -> str:
-        from subprocess import run, PIPE
-        logger(f"[router] Running router prompt: {prompt_path}")
-        try:
-            with open(prompt_path, "rb") as fin:
-                cp = run(cmd, stdin=fin, stdout=PIPE, stderr=PIPE)
-        except Exception as exc:
-            raise RuntimeError(f"Router prompt execution failed: {exc}") from exc
-        stdout = cp.stdout.decode("utf-8", errors="replace")
-        stderr = cp.stderr.decode("utf-8", errors="replace")
-        if stderr.strip():
-            logger(f"[router] stderr: {stderr.strip()}")
-        if cp.returncode != 0:
-            raise RuntimeError(f"Router prompt failed with rc={cp.returncode}")
-        return stdout
-
     def _select_prompt(
         cmd: list[str],
         logger,
@@ -251,19 +156,19 @@ def main() -> int:
             router_prompt_path = resolve_prompt_path(args.router_prompt, cfg.prompts_dir)
             if not router_prompt_path.exists():
                 raise FileNotFoundError(f"Router prompt file not found: {router_prompt_path}")
-            router_output = _run_router_prompt(cmd, router_prompt_path, logger)
-        decision = select_prompt_with_mode(
-            state,
-            prompt_map,
-            args.router_review_every_n,
-            allowlist=allowlist,
+            router_output = run_router_prompt(cmd, router_prompt_path, logger)
+
+        ctx = RouterContext(
             prompts_dir=cfg.prompts_dir,
+            prompt_map=prompt_map,
+            allowlist=allowlist,
+            review_every_n=args.router_review_every_n,
             router_mode=args.router_mode,
             router_output=router_output,
+            use_router=True,
         )
-        log_router_decision(logger, state, decision)
-        prompt_path = resolve_prompt_path(decision.selected_prompt, cfg.prompts_dir)
-        return prompt_path, state, decision.selected_prompt
+        selection = select_prompt(state, ctx, logger)
+        return selection.prompt_path, state, selection.selected_prompt
 
     def _pull_with_error(logger, ctx: str) -> bool:
         buf: list[str] = []
