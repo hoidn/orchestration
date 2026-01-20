@@ -96,3 +96,87 @@ def test_review_cadence_single(tmp_path: Path) -> None:
     assert rc == 0
     assert executed == ["reviewer.md", "main.md"]
     assert state.last_prompt == "main.md"
+
+
+def test_router_override_galph_only(tmp_path: Path) -> None:
+    prompts_dir = tmp_path / "prompts"
+    prompts_dir.mkdir()
+    for name in ("supervisor.md", "main.md", "reviewer.md"):
+        _write_prompt(prompts_dir / name)
+
+    state = OrchestrationState(iteration=3, expected_actor="galph", status="idle")
+    allowlist = ["supervisor.md", "main.md", "reviewer.md"]
+
+    galph_ctx, ralph_ctx = build_combined_contexts(
+        prompts_dir=prompts_dir,
+        supervisor_prompt="supervisor.md",
+        main_prompt="main.md",
+        reviewer_prompt="reviewer.md",
+        allowlist=allowlist,
+        review_every_n=0,
+        router_mode="router_default",
+        router_output="reviewer.md",
+        use_router=True,
+    )
+
+    executed: list[str] = []
+
+    def _exec(prompt_path: Path) -> int:
+        executed.append(prompt_path.name)
+        return 0
+
+    rc = run_combined_iteration(
+        state=state,
+        galph_ctx=galph_ctx,
+        ralph_ctx=ralph_ctx,
+        galph_executor=_exec,
+        ralph_executor=_exec,
+        galph_logger=lambda _: None,
+        ralph_logger=lambda _: None,
+        state_writer=lambda _: None,
+    )
+
+    assert rc == 0
+    assert executed == ["reviewer.md", "main.md"]
+
+
+def test_router_disabled_uses_actor_prompts(tmp_path: Path) -> None:
+    prompts_dir = tmp_path / "prompts"
+    prompts_dir.mkdir()
+    for name in ("supervisor.md", "main.md", "reviewer.md"):
+        _write_prompt(prompts_dir / name)
+
+    state = OrchestrationState(iteration=2, expected_actor="galph", status="idle")
+    allowlist = ["supervisor.md", "main.md", "reviewer.md"]
+
+    galph_ctx, ralph_ctx = build_combined_contexts(
+        prompts_dir=prompts_dir,
+        supervisor_prompt="supervisor.md",
+        main_prompt="main.md",
+        reviewer_prompt="reviewer.md",
+        allowlist=allowlist,
+        review_every_n=1,
+        router_mode="router_default",
+        router_output="reviewer.md",
+        use_router=False,
+    )
+
+    executed: list[str] = []
+
+    def _exec(prompt_path: Path) -> int:
+        executed.append(prompt_path.name)
+        return 0
+
+    rc = run_combined_iteration(
+        state=state,
+        galph_ctx=galph_ctx,
+        ralph_ctx=ralph_ctx,
+        galph_executor=_exec,
+        ralph_executor=_exec,
+        galph_logger=lambda _: None,
+        ralph_logger=lambda _: None,
+        state_writer=lambda _: None,
+    )
+
+    assert rc == 0
+    assert executed == ["supervisor.md", "main.md"]
