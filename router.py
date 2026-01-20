@@ -95,8 +95,20 @@ def deterministic_route(
         reviewer = prompt_map.get("reviewer")
         if not reviewer:
             raise ValueError("review_every_n set but prompt_map missing 'reviewer' entry.")
-        candidate = reviewer
-        reason = f"review cadence hit (iteration={state.iteration}, every={review_every_n})"
+        reviewer_norm = _normalize_prompt_token(reviewer)
+        last_prompt_norm = _normalize_prompt_token(state.last_prompt) if state.last_prompt else None
+        if (
+            expected_actor == "ralph"
+            and last_prompt_norm == reviewer_norm
+            and state.last_prompt_actor == "galph"
+        ):
+            reason = (
+                "review cadence skipped for ralph; "
+                "reviewer already ran on galph turn"
+            )
+        else:
+            candidate = reviewer
+            reason = f"review cadence hit (iteration={state.iteration}, every={review_every_n})"
 
     allow_tokens = allowlist if allowlist is not None else prompt_map.values()
     allowset = _normalize_allowlist(allow_tokens)

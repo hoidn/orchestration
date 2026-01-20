@@ -255,7 +255,7 @@ def build_combined_contexts(
         prompts_dir=prompts_dir,
         prompt_map=prompt_map,
         allowlist=allowlist,
-        review_every_n=0 if use_router else 0,
+        review_every_n=review_every_n,
         router_mode=ralph_mode,
         router_output=None,
         use_router=use_router,

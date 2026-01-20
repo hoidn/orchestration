@@ -29,6 +29,7 @@ class OrchestrationState:
     galph_commit: Optional[str] = None
     ralph_commit: Optional[str] = None
     last_prompt: Optional[str] = None
+    last_prompt_actor: Optional[str] = None
 
     @staticmethod
     def read(path: str) -> "OrchestrationState":
@@ -47,6 +48,7 @@ class OrchestrationState:
             galph_commit=data.get("galph_commit"),
             ralph_commit=data.get("ralph_commit"),
             last_prompt=data.get("last_prompt"),
+            last_prompt_actor=data.get("last_prompt_actor"),
         )
 
     def write(self, path: str) -> None:

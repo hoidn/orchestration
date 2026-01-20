@@ -133,6 +133,7 @@ Deterministic routing can select the per-iteration prompt using `sync/state.json
 
 - Deterministic routing uses `expected_actor` + `iteration` to select a prompt.
 - Review cadence: when `review_every_n > 0` and `iteration % review_every_n == 0`, the reviewer prompt is selected.
+- Combined mode note: when review cadence hits on the galph turn, the ralph turn skips the reviewer prompt for that iteration.
 - Allowlist enforcement: selected prompts must be in the allowlist and exist on disk.
 - Actor gating: reviewer prompt is allowed for both actors; otherwise the prompt must match the actor default.
 - Optional router prompt override: if configured, a router prompt runs after deterministic selection and may override it.

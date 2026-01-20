@@ -176,6 +176,7 @@ def run_turn(
     rc = executor(selection.prompt_path)
     if ctx.use_router:
         state.last_prompt = selection.selected_prompt
+        state.last_prompt_actor = role
     return TurnResult(
         state=state,
         returncode=rc,
