@@ -29,7 +29,7 @@
 #
 #   Directories:
 #     docs/, docs/architecture/, docs/architecture/contracts/, docs/debugging/,
-#     docs/development/, docs/spec-shards/, plans/, plans/active/,
+#     docs/development/, specs/, plans/, plans/active/,
 #     plans/templates/, inbox/, outbox/, sync/
 #
 #   Documentation:
@@ -38,7 +38,7 @@
 #     docs/architecture/contracts/module.idl.md
 #     docs/debugging/*.md (troubleshooting guides)
 #     docs/development/*.md (CONTRIBUTING.md, testing_strategy.md)
-#     docs/spec-shards/spec-*.md (spec shard templates)
+#     specs/spec-*.md (spec shard templates)
 #     plans/templates/plan.md
 #
 # What is NOT touched:
@@ -221,7 +221,9 @@ init_directories() {
     ensure_dir "docs/architecture/contracts"
     ensure_dir "docs/debugging"
     ensure_dir "docs/development"
-    ensure_dir "docs/spec-shards"
+
+    # Specs directory (canonical location for behavioral specs)
+    ensure_dir "specs"
 
     # Plans structure
     ensure_dir "plans"
@@ -285,7 +287,12 @@ init_spec_shards() {
     log ""
     log "Copying spec shard templates..."
 
-    copy_dir_files "$TEMPLATES_DIR/docs/spec-shards" "docs/spec-shards" "spec-*.md"
+    # Primary location: templates/specs, fallback: templates/docs/spec-shards
+    local template_src="$TEMPLATES_DIR/specs"
+    if [[ ! -d "$template_src" ]]; then
+        template_src="$TEMPLATES_DIR/docs/spec-shards"
+    fi
+    copy_dir_files "$template_src" "specs" "spec-*.md"
 }
 
 init_plans() {

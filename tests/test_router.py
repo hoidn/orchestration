@@ -176,3 +176,53 @@ def test_router_only_enforces_actor(tmp_path: Path) -> None:
             router_mode="router_only",
             router_output="supervisor.md",
         )
+
+
+def test_spec_bootstrap_defaults(tmp_path: Path) -> None:
+    """Test that SpecBootstrapConfig defaults to specs/ and exercises legacy template fallback."""
+    from scripts.orchestration.config import SpecBootstrapConfig
+
+    # Test 1: Minimal orchestration.yaml with spec_bootstrap block lacking specs.dir
+    config_path = tmp_path / "orchestration.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "prompts_dir: prompts",
+                "spec_bootstrap:",
+                "  templates_dir: " + str(tmp_path / "templates"),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = load_config(config_path=config_path, warn_missing=False)
+    assert cfg.spec_bootstrap is not None
+    assert cfg.spec_bootstrap.specs_dir == Path("specs"), "Default specs_dir should be specs/"
+
+    # Test 2: Config without spec_bootstrap section still gets SpecBootstrapConfig
+    minimal_config = tmp_path / "minimal.yaml"
+    minimal_config.write_text("prompts_dir: prompts\n", encoding="utf-8")
+    cfg_minimal = load_config(config_path=minimal_config, warn_missing=False)
+    assert cfg_minimal.spec_bootstrap is not None
+    assert cfg_minimal.spec_bootstrap.specs_dir == Path("specs")
+
+    # Test 3: discover_shards() searches specs/ first, falls back to docs/spec-shards
+    templates_dir = tmp_path / "templates"
+
+    # Scenario A: Only legacy docs/spec-shards exists
+    legacy_dir = templates_dir / "docs" / "spec-shards"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "spec-legacy.md").write_text("# Legacy spec\n", encoding="utf-8")
+
+    sb_cfg = SpecBootstrapConfig(templates_dir=templates_dir)
+    shards = sb_cfg.discover_shards()
+    assert "spec-legacy.md" in shards, "Should discover from legacy docs/spec-shards"
+
+    # Scenario B: Both specs/ and docs/spec-shards exist - specs/ takes precedence
+    primary_dir = templates_dir / "specs"
+    primary_dir.mkdir(parents=True)
+    (primary_dir / "spec-primary.md").write_text("# Primary spec\n", encoding="utf-8")
+
+    shards_after = sb_cfg.discover_shards()
+    assert "spec-primary.md" in shards_after, "Should discover from primary specs/"
+    assert "spec-legacy.md" not in shards_after, "Should NOT fall back when primary exists"

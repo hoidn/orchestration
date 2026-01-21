@@ -98,11 +98,12 @@ class SpecBootstrapConfig:
     """Configuration for spec bootstrapping process."""
 
     # External templates directory — the single source of truth for spec structure.
-    # Shards are discovered from {templates_dir}/docs/spec-shards/*.md
+    # Shards are discovered from {templates_dir}/specs/*.md with fallback to
+    # {templates_dir}/docs/spec-shards/*.md for legacy template layouts.
     templates_dir: Path = field(default_factory=lambda: Path("~/Documents/project-templates").expanduser())
 
     # Local spec directory (where specs are written)
-    specs_dir: Path = field(default_factory=lambda: Path("docs/spec-shards"))
+    specs_dir: Path = field(default_factory=lambda: Path("specs"))
 
     # Implementation source
     impl_dirs: list[str] = field(default_factory=lambda: ["src/"])
@@ -129,9 +130,16 @@ class SpecBootstrapConfig:
         """
         Discover spec shards from the templates directory.
 
+        Searches templates_dir/specs first, falling back to templates_dir/docs/spec-shards
+        for legacy template layouts.
+
         Returns list of shard filenames (e.g., ['spec-db-core.md', 'spec-db-workflow.md']).
         """
-        template_specs_dir = self.templates_dir / "docs" / "spec-shards"
+        # Primary location: templates_dir/specs
+        template_specs_dir = self.templates_dir / "specs"
+        if not template_specs_dir.is_dir():
+            # Fallback: legacy templates_dir/docs/spec-shards
+            template_specs_dir = self.templates_dir / "docs" / "spec-shards"
         if not template_specs_dir.is_dir():
             return []
         return sorted([
@@ -267,24 +275,26 @@ def load_config(config_path: Optional[Path] = None, warn_missing: bool = True) -
         if "prompts" in agent:
             cfg.agent_prompts = dict(agent["prompts"])
 
-    # Parse spec_bootstrap section if present
+    # Always create SpecBootstrapConfig with defaults, then merge any YAML overrides.
+    # This ensures repos without docs/spec-shards/ still get a valid config pointing to specs/.
+    sb_cfg = SpecBootstrapConfig()
+
     if "spec_bootstrap" in data:
-        sb_data = data["spec_bootstrap"]
-        sb_cfg = SpecBootstrapConfig()
+        sb_data = data["spec_bootstrap"] or {}
 
         if "templates_dir" in sb_data:
             sb_cfg.templates_dir = Path(sb_data["templates_dir"]).expanduser()
 
         # Specs section
         if "specs" in sb_data:
-            specs = sb_data["specs"]
+            specs = sb_data["specs"] or {}
             if "dir" in specs:
                 sb_cfg.specs_dir = Path(specs["dir"])
             # Note: shards are discovered from templates_dir, not configured
 
         # Implementation section
         if "implementation" in sb_data:
-            impl = sb_data["implementation"]
+            impl = sb_data["implementation"] or {}
             if "dirs" in impl:
                 sb_cfg.impl_dirs = list(impl["dirs"])
             if "entry_points" in impl:
@@ -294,7 +304,7 @@ def load_config(config_path: Optional[Path] = None, warn_missing: bool = True) -
 
         # Scoring section
         if "scoring" in sb_data:
-            scoring = sb_data["scoring"]
+            scoring = sb_data["scoring"] or {}
             if "coverage" in scoring:
                 sb_cfg.coverage_threshold = int(scoring["coverage"])
             if "accuracy" in scoring:
@@ -307,13 +317,13 @@ def load_config(config_path: Optional[Path] = None, warn_missing: bool = True) -
 
         # Prompts section
         if "prompts" in sb_data:
-            prompts = sb_data["prompts"]
+            prompts = sb_data["prompts"] or {}
             if "reviewer" in prompts:
                 sb_cfg.reviewer_prompt = prompts["reviewer"]
             if "writer" in prompts:
                 sb_cfg.writer_prompt = prompts["writer"]
 
-        cfg.spec_bootstrap = sb_cfg
+    cfg.spec_bootstrap = sb_cfg
 
     return cfg
 

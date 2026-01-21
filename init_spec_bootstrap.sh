@@ -32,7 +32,7 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
-SPECS_DIR="docs/spec-shards"
+SPECS_DIR="specs"
 PROMPTS_DIR="prompts"
 STATE_FILE="sync/spec_bootstrap_state.json"
 
@@ -45,9 +45,13 @@ if [[ ! -d "$TEMPLATES_DIR" ]]; then
     exit 1
 fi
 
-TEMPLATE_SPECS="$TEMPLATES_DIR/docs/spec-shards"
+# Primary location: templates/specs, fallback: templates/docs/spec-shards
+TEMPLATE_SPECS="$TEMPLATES_DIR/specs"
 if [[ ! -d "$TEMPLATE_SPECS" ]]; then
-    echo "ERROR: No spec-shards directory in templates: $TEMPLATE_SPECS"
+    TEMPLATE_SPECS="$TEMPLATES_DIR/docs/spec-shards"
+fi
+if [[ ! -d "$TEMPLATE_SPECS" ]]; then
+    echo "ERROR: No specs directory in templates (tried specs/ and docs/spec-shards/): $TEMPLATES_DIR"
     exit 1
 fi
 

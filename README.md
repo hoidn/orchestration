@@ -77,7 +77,7 @@ For bootstrapping specs from an existing implementation:
 spec_bootstrap:
   templates_dir: ~/Documents/project-templates
   specs:
-    dir: docs/spec-shards
+    dir: specs  # Canonical location; templates discovered from templates_dir/specs (fallback: templates_dir/docs/spec-shards)
   implementation:
     dirs:
       - src/
@@ -93,6 +93,8 @@ spec_bootstrap:
     reviewer: spec_reviewer.md
     writer: spec_writer.md
 ```
+
+Note: If the `specs.dir` key is omitted, it defaults to `specs/`. Spec shard templates are discovered from `templates_dir/specs/*.md` with a fallback to `templates_dir/docs/spec-shards/*.md` for legacy template layouts. See `docs/index.md` for the full documentation map.
 
 ## Overview
 - Two actors:
