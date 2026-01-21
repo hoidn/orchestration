@@ -475,13 +475,16 @@ def main() -> int:
         return selection
 
     # Branch guard (if provided) and target branch resolution
-    if args.branch:
+    # Skip if --no-git is set
+    if args.branch and not args.no_git:
         def _branch_guard_log(message: str) -> None:
             sys.stderr.write(message + "\n")
             sys.stderr.flush()
 
         assert_on_branch(args.branch, _branch_guard_log)
         branch_target = args.branch
+    elif args.no_git:
+        branch_target = args.branch or "no-git-mode"
     else:
         branch_target = current_branch()
 
@@ -530,10 +533,18 @@ def main() -> int:
                 return rc
         return 0
 
-    # Sync via Git
+    # Sync via Git (or --no-git local sync mode)
     # session notice (to console only)
-    print(f"[sync] supervisor: SYNC via git for {args.sync_loops} iteration(s)")
+    if args.no_git:
+        print(f"[sync] supervisor: LOCAL sync (--no-git) for {args.sync_loops} iteration(s)")
+    else:
+        print(f"[sync] supervisor: SYNC via git for {args.sync_loops} iteration(s)")
     args.state_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # Initialize logp for use after the loop (will be overwritten per-iteration)
+    def _default_logp(msg: str) -> None:
+        print(f"[supervisor] {msg}")
+    logp = _default_logp
 
     for _ in range(args.sync_loops):
         # Check for exit signal
@@ -544,58 +555,68 @@ def main() -> int:
 
         # Determine iteration-specific log file
         # Use current state when available to derive iteration number
-        if not _pull_with_error(lambda m: None, "pre-pull"):
-            # Pre-pull fallback: attempt doc/meta auto-commit if enabled, then retry pull
-            if args.prepull_auto_commit_docs:
-                # First, scrub submodules and retry pull (more robust than committing)
-                _submodule_scrub(lambda m: None)
-                if not _pull_with_error(lambda m: None, "pre-pull (after submodule scrub)"):
-                    # Next, try auto-committing modified tracked outputs (fixtures) within limits
-                    _supervisor_autocommit_tracked_outputs(args, lambda m: None)
-                    if not _pull_with_error(lambda m: None, "pre-pull (after tracked-outputs)"):
-                        # Finally, attempt doc/meta auto-commit
-                        committed, forbidden = _supervisor_autocommit_docs(args, lambda m: None)
-                        if committed and not forbidden:
-                            if not _pull_with_error(lambda m: None, "pre-pull (after autocommit)"):
+        # Skip git pull if --no-git is set
+        if not args.no_git:
+            if not _pull_with_error(lambda m: None, "pre-pull"):
+                # Pre-pull fallback: attempt doc/meta auto-commit if enabled, then retry pull
+                if args.prepull_auto_commit_docs:
+                    # First, scrub submodules and retry pull (more robust than committing)
+                    _submodule_scrub(lambda m: None)
+                    if not _pull_with_error(lambda m: None, "pre-pull (after submodule scrub)"):
+                        # Next, try auto-committing modified tracked outputs (fixtures) within limits
+                        _supervisor_autocommit_tracked_outputs(args, lambda m: None)
+                        if not _pull_with_error(lambda m: None, "pre-pull (after tracked-outputs)"):
+                            # Finally, attempt doc/meta auto-commit
+                            committed, forbidden = _supervisor_autocommit_docs(args, lambda m: None)
+                            if committed and not forbidden:
+                                if not _pull_with_error(lambda m: None, "pre-pull (after autocommit)"):
+                                    return 1
+                            else:
+                                print("[sync] ERROR: git pull failed; pre-pull auto-commit not applicable or blocked.")
                                 return 1
-                        else:
-                            print("[sync] ERROR: git pull failed; pre-pull auto-commit not applicable or blocked.")
-                            return 1
-            else:
-                # Error already printed by _pull_with_error
-                return 1
-        st_probe = OrchestrationState.read(str(args.state_file))
+                else:
+                    # Error already printed by _pull_with_error
+                    return 1
+        # Read current state (create default if missing)
+        if args.state_file.exists():
+            st_probe = OrchestrationState.read(str(args.state_file))
+        else:
+            st_probe = OrchestrationState()
+            st_probe.expected_actor = "galph"
+            st_probe.status = "idle"
         itnum = st_probe.iteration
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         iter_log = args.logdir / branch_target.replace('/', '-') / "galph" / f"iter-{itnum:05d}_{ts}.log"
         logp = make_logger(iter_log)
 
-        if not _pull_with_error(logp, "pre-wait"):
-            if args.prepull_auto_commit_docs:
-                _submodule_scrub(logp)
-                if not _pull_with_error(logp, "pre-wait (after submodule scrub)"):
-                    _supervisor_autocommit_tracked_outputs(args, logp)
-                    if not _pull_with_error(logp, "pre-wait (after tracked-outputs)"):
-                        committed, forbidden = _supervisor_autocommit_docs(args, logp)
-                        if committed and not forbidden:
-                            if not _pull_with_error(logp, "pre-wait (after autocommit)"):
+        # Skip git pull if --no-git; otherwise do the pre-wait pull
+        if not args.no_git:
+            if not _pull_with_error(logp, "pre-wait"):
+                if args.prepull_auto_commit_docs:
+                    _submodule_scrub(logp)
+                    if not _pull_with_error(logp, "pre-wait (after submodule scrub)"):
+                        _supervisor_autocommit_tracked_outputs(args, logp)
+                        if not _pull_with_error(logp, "pre-wait (after tracked-outputs)"):
+                            committed, forbidden = _supervisor_autocommit_docs(args, logp)
+                            if committed and not forbidden:
+                                if not _pull_with_error(logp, "pre-wait (after autocommit)"):
+                                    return 1
+                            else:
+                                print("[sync] ERROR: git pull failed; pre-pull auto-commit not applicable or blocked.")
                                 return 1
-                        else:
-                            print("[sync] ERROR: git pull failed; pre-pull auto-commit not applicable or blocked.")
-                            return 1
-            else:
-                # Error already printed by _pull_with_error
-                return 1
+                else:
+                    # Error already printed by _pull_with_error
+                    return 1
 
-        # Resume mode: if a local stamped handoff exists but isn't pushed yet, publish and skip work
-        st_local_probe = OrchestrationState.read(str(args.state_file))
-        if (st_local_probe.expected_actor != "galph" or st_local_probe.status in {"waiting-ralph", "failed"}) and has_unpushed_commits():
-            logp("[sync] Detected local stamped handoff with unpushed commits; attempting push-only reconciliation.")
-            if not push_with_rebase(branch_target, logp):
-                print("[sync] ERROR: failed to push local stamped handoff; resolve and retry.")
-                return 1
-            # Continue to next supervisor iteration
-            continue
+            # Resume mode: if a local stamped handoff exists but isn't pushed yet, publish and skip work
+            st_local_probe = OrchestrationState.read(str(args.state_file))
+            if (st_local_probe.expected_actor != "galph" or st_local_probe.status in {"waiting-ralph", "failed"}) and has_unpushed_commits():
+                logp("[sync] Detected local stamped handoff with unpushed commits; attempting push-only reconciliation.")
+                if not push_with_rebase(branch_target, logp):
+                    print("[sync] ERROR: failed to push local stamped handoff; resolve and retry.")
+                    return 1
+                # Continue to next supervisor iteration
+                continue
 
         # Initialize state if missing
         if not args.state_file.exists():
@@ -603,36 +624,41 @@ def main() -> int:
             st_init.expected_actor = "galph"
             st_init.status = "idle"
             st_init.write(str(args.state_file))
-            add([str(args.state_file)])
-            commit("[SYNC init] actor=galph status=idle")
-            push_to(branch_target, logp)
+            if not args.no_git:
+                add([str(args.state_file)])
+                commit("[SYNC init] actor=galph status=idle")
+                push_to(branch_target, logp)
 
-        # Wait for our turn (always executed)
-        logp("Waiting for expected_actor=galph...")
-        start = time.time()
-        last_hb = start
-        prev_state = None
-        while True:
-            if not _pull_with_error(logp, "polling"):
-                return 1
-            st = OrchestrationState.read(str(args.state_file))
-            cur_state = (st.expected_actor, st.status, st.iteration)
-            if args.verbose and cur_state != prev_state:
-                print(f"[sync] state: actor={st.expected_actor} status={st.status} iter={st.iteration}")
-                logp(f"[sync] state: actor={st.expected_actor} status={st.status} iter={st.iteration}")
-                prev_state = cur_state
-            if st.expected_actor == "galph":
-                break
-            if args.max_wait_sec and (time.time() - start) > args.max_wait_sec:
-                logp("Timeout waiting for galph turn")
-                return 1
-            if args.heartbeat_secs and (time.time() - last_hb) >= args.heartbeat_secs:
-                elapsed = int(time.time() - start)
-                msg = f"[sync] waiting for turn (galph)… {elapsed}s elapsed"
-                print(msg)
-                logp(msg)
-                last_hb = time.time()
-            time.sleep(args.poll_interval)
+        # Wait for our turn (skip if --no-git since we're running locally)
+        if args.no_git:
+            logp("[no-git] Skipping turn wait; running locally")
+            st = OrchestrationState.read(str(args.state_file)) if args.state_file.exists() else OrchestrationState()
+        else:
+            logp("Waiting for expected_actor=galph...")
+            start = time.time()
+            last_hb = start
+            prev_state = None
+            while True:
+                if not _pull_with_error(logp, "polling"):
+                    return 1
+                st = OrchestrationState.read(str(args.state_file))
+                cur_state = (st.expected_actor, st.status, st.iteration)
+                if args.verbose and cur_state != prev_state:
+                    print(f"[sync] state: actor={st.expected_actor} status={st.status} iter={st.iteration}")
+                    logp(f"[sync] state: actor={st.expected_actor} status={st.status} iter={st.iteration}")
+                    prev_state = cur_state
+                if st.expected_actor == "galph":
+                    break
+                if args.max_wait_sec and (time.time() - start) > args.max_wait_sec:
+                    logp("Timeout waiting for galph turn")
+                    return 1
+                if args.heartbeat_secs and (time.time() - last_hb) >= args.heartbeat_secs:
+                    elapsed = int(time.time() - start)
+                    msg = f"[sync] waiting for turn (galph)… {elapsed}s elapsed"
+                    print(msg)
+                    logp(msg)
+                    last_hb = time.time()
+                time.sleep(args.poll_interval)
 
         # Execute one supervisor iteration
         try:
@@ -651,22 +677,23 @@ def main() -> int:
             print(f"[sync] ERROR: {e}")
             return 2
 
-        st = OrchestrationState.read(str(args.state_file))
+        st = OrchestrationState.read(str(args.state_file)) if args.state_file.exists() else OrchestrationState()
         if args.use_router:
             st.last_prompt = selected_prompt
             st.last_prompt_actor = "galph"
         st.status = "running-galph"
         st.write(str(args.state_file))
-        add([str(args.state_file)])
-        commit(f"[SYNC i={st.iteration}] actor=galph status=running")
-        push_to(branch_target, logp)
+        if not args.no_git:
+            add([str(args.state_file)])
+            commit(f"[SYNC i={st.iteration}] actor=galph status=running")
+            push_to(branch_target, logp)
 
         rc = tee_run(selection.cmd, prompt_file, iter_log)
 
-        sha = short_head()
+        sha = short_head() if not args.no_git else "no-git"
 
-        # Auto-commit reports evidence (before stamping)
-        if args.auto_commit_reports:
+        # Auto-commit reports evidence (before stamping) — skip if --no-git
+        if args.auto_commit_reports and not args.no_git:
             allowed = {e.strip().lower() for e in args.report_extensions.split(',') if e.strip()}
             autocommit_reports(
                 allowed_extensions=allowed,
@@ -679,13 +706,13 @@ def main() -> int:
                 allowed_path_globs=report_path_globs,
             )
 
-        # Auto-commit modified tracked outputs (e.g., regenerated fixtures) before doc hygiene
-        if args.auto_commit_tracked_outputs:
+        # Auto-commit modified tracked outputs (e.g., regenerated fixtures) before doc hygiene — skip if --no-git
+        if args.auto_commit_tracked_outputs and not args.no_git:
             _supervisor_autocommit_tracked_outputs(args, logp)
 
         # Determine post-run success without early-returning
         post_ok = (rc == 0)
-        if args.auto_commit_docs:
+        if args.auto_commit_docs and not args.no_git:
             # Scrub submodules once before checking doc/meta dirtiness (pointer drift resilience)
             _submodule_scrub(logp)
             committed_docs, forbidden = _supervisor_autocommit_docs(args, logp)
@@ -704,53 +731,67 @@ def main() -> int:
                         post_ok = False
 
         # Stamp FIRST (idempotent): write local handoff or failure before any pushes
-        st = OrchestrationState.read(str(args.state_file))
+        st = OrchestrationState.read(str(args.state_file)) if args.state_file.exists() else OrchestrationState()
         if post_ok:
             st.stamp(expected_actor="ralph", status="waiting-ralph", galph_commit=sha)
             st.write(str(args.state_file))
-            add([str(args.state_file)])
-            commit(f"[SYNC i={st.iteration}] actor=galph → next=ralph status=ok galph_commit={sha}")
+            if not args.no_git:
+                add([str(args.state_file)])
+                commit(f"[SYNC i={st.iteration}] actor=galph → next=ralph status=ok galph_commit={sha}")
         else:
             st.stamp(expected_actor="galph", status="failed", galph_commit=sha)
             st.write(str(args.state_file))
-            add([str(args.state_file)])
-            commit(f"[SYNC i={st.iteration}] actor=galph status=fail galph_commit={sha}")
+            if not args.no_git:
+                add([str(args.state_file)])
+                commit(f"[SYNC i={st.iteration}] actor=galph status=fail galph_commit={sha}")
 
-        # Publish stamped state. If push fails, exit; restart will resume push without re-running work.
-        if not push_with_rebase(branch_target, logp):
-            print("[sync] ERROR: failed to push stamped state; resolve and relaunch to resume push.")
-            return 1
+        # Publish stamped state (skip if --no-git). If push fails, exit; restart will resume push without re-running work.
+        if not args.no_git:
+            if not push_with_rebase(branch_target, logp):
+                print("[sync] ERROR: failed to push stamped state; resolve and relaunch to resume push.")
+                return 1
         if not post_ok:
-            logp(f"Supervisor iteration failed rc={rc}. Stamped failure and pushed; exiting.")
+            logp(f"Supervisor iteration failed rc={rc}. Stamped failure{' and pushed' if not args.no_git else ''}; exiting.")
             return rc
 
-        # Wait for Ralph to finish and increment iteration
-        logp(f"Waiting for Ralph to complete i={st.iteration}...")
-        current_iter = st.iteration
-        start2 = time.time()
-        last_hb2 = start2
-        prev_state2 = None
-        while True:
-            if not _pull_with_error(logp, "wait-for-ralph"):
-                return 1
-            st2 = OrchestrationState.read(str(args.state_file))
-            cur_state2 = (st2.expected_actor, st2.status, st2.iteration)
-            if args.verbose and cur_state2 != prev_state2:
-                print(f"[sync] state: actor={st2.expected_actor} status={st2.status} iter={st2.iteration}")
-                logp(f"[sync] state: actor={st2.expected_actor} status={st2.status} iter={st2.iteration}")
-                prev_state2 = cur_state2
-            if st2.expected_actor == "galph" and st2.iteration > current_iter:
-                logp(f"Ralph completed iteration {current_iter}; proceeding to {st2.iteration}")
-                break
-            if args.heartbeat_secs and (time.time() - last_hb2) >= args.heartbeat_secs:
-                elapsed = int(time.time() - start2)
-                msg = f"[sync] waiting for ralph… {elapsed}s elapsed (i={current_iter})"
-                print(msg)
-                logp(msg)
-                last_hb2 = time.time()
-            time.sleep(args.poll_interval)
+        # Wait for Ralph to finish and increment iteration (skip if --no-git since we're running locally)
+        if args.no_git:
+            logp(f"[no-git] Skipping wait for Ralph; incrementing iteration locally")
+            st.iteration += 1
+            st.expected_actor = "galph"
+            st.status = "complete"
+            st.write(str(args.state_file))
+        else:
+            logp(f"Waiting for Ralph to complete i={st.iteration}...")
+            current_iter = st.iteration
+            start2 = time.time()
+            last_hb2 = start2
+            prev_state2 = None
+            while True:
+                if not _pull_with_error(logp, "wait-for-ralph"):
+                    return 1
+                st2 = OrchestrationState.read(str(args.state_file))
+                cur_state2 = (st2.expected_actor, st2.status, st2.iteration)
+                if args.verbose and cur_state2 != prev_state2:
+                    print(f"[sync] state: actor={st2.expected_actor} status={st2.status} iter={st2.iteration}")
+                    logp(f"[sync] state: actor={st2.expected_actor} status={st2.status} iter={st2.iteration}")
+                    prev_state2 = cur_state2
+                if st2.expected_actor == "galph" and st2.iteration > current_iter:
+                    logp(f"Ralph completed iteration {current_iter}; proceeding to {st2.iteration}")
+                    break
+                if args.heartbeat_secs and (time.time() - last_hb2) >= args.heartbeat_secs:
+                    elapsed = int(time.time() - start2)
+                    msg = f"[sync] waiting for ralph… {elapsed}s elapsed (i={current_iter})"
+                    print(msg)
+                    logp(msg)
+                    last_hb2 = time.time()
+                time.sleep(args.poll_interval)
 
-    logp("Supervisor SYNC loop finished.")
+    # logp may be undefined if sync_loops == 0; use print as fallback
+    if args.sync_loops > 0:
+        logp("Supervisor SYNC loop finished.")
+    else:
+        print("[supervisor] SYNC loop finished (0 iterations).")
     return 0
 
 
