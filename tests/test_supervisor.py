@@ -39,7 +39,7 @@ class TestNoGit:
         state_dir = tmp_path / "sync"
         state_dir.mkdir()
         state_file = state_dir / "state.json"
-        st = OrchestrationState(iteration=1, expected_actor="galph", status="idle")
+        st = OrchestrationState(workflow_name="standard", step_index=0, iteration=1, status="idle")
         st.write(str(state_file))
 
         # Track git bus calls
@@ -215,7 +215,7 @@ class TestNoGit:
         state_dir = tmp_path / "sync"
         state_dir.mkdir()
         state_file = state_dir / "state.json"
-        st = OrchestrationState(iteration=5, expected_actor="galph", status="idle")
+        st = OrchestrationState(workflow_name="standard", step_index=4, iteration=5, status="idle")
         st.write(str(state_file))
 
         # Mock all git operations to fail if called
@@ -255,8 +255,8 @@ class TestNoGit:
 
         # State should be updated locally
         final_state = OrchestrationState.read(str(state_file))
-        assert final_state.iteration == 6, "Iteration should be incremented from 5 to 6"
-        assert final_state.expected_actor == "galph"
+        assert final_state.iteration == 7, "Iteration should advance to the next even step"
+        assert final_state.step_index == 6
         assert final_state.status == "complete"
         assert rc == 0
 
@@ -269,7 +269,7 @@ class TestNoGit:
         state_dir = tmp_path / "sync"
         state_dir.mkdir()
         state_file = state_dir / "state.json"
-        st = OrchestrationState(iteration=1, expected_actor="galph", status="idle")
+        st = OrchestrationState(workflow_name="standard", step_index=0, iteration=1, status="idle")
         st.write(str(state_file))
 
         autocommit_calls = {"docs": 0, "reports": 0, "tracked": 0}

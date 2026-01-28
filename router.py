@@ -202,11 +202,16 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Deterministic router for orchestration prompts.")
     ap.add_argument("--state-file", type=Path, default=Path(os.getenv("STATE_FILE", str(cfg.state_file))))
     ap.add_argument("--prompts-dir", type=Path, default=Path(os.getenv("PROMPTS_DIR", str(cfg.prompts_dir))))
+    review_default = os.getenv("ORCHESTRATION_WORKFLOW_REVIEW_EVERY_N")
+    if review_default is None:
+        review_default = os.getenv("ROUTER_REVIEW_EVERY_N")
+    if review_default is None:
+        review_default = str(cfg.workflow_review_every_n)
     ap.add_argument(
         "--review-every-n",
         type=int,
-        default=int(os.getenv("ROUTER_REVIEW_EVERY_N", "0")),
-        help="Route to reviewer prompt every N iterations (0 disables).",
+        default=int(review_default),
+        help="Route to reviewer prompt every N cycles (0 disables).",
     )
     ap.add_argument("--prompt-supervisor", type=str, default=os.getenv("ROUTER_PROMPT_SUPERVISOR", "supervisor.md"))
     ap.add_argument("--prompt-main", type=str, default=os.getenv("ROUTER_PROMPT_MAIN", "main.md"))

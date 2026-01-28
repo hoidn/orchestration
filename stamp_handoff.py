@@ -66,39 +66,38 @@ def main() -> int:
     if not args.state_file.exists():
         raise SystemExit(f"ERROR: state file not found: {args.state_file}")
     state = json.loads(args.state_file.read_text(encoding="utf-8"))
-    iter_no = int(state.get("iteration", 1))
+    raw_iteration = int(state.get("iteration", 1))
+    step_index = int(state.get("step_index", max(0, raw_iteration - 1)))
+    iteration = int(state.get("iteration", step_index + 1))
+    state["step_index"] = step_index
+    state["iteration"] = iteration
 
     now = datetime.now(timezone.utc)
     state["last_update"] = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     state["lease_expires_at"] = (now + timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     sha = short_head()
-    commit_iter = iter_no
-
     # Apply stamp semantics
     if args.actor == "galph":
         state["galph_commit"] = sha
         if args.result == "ok":
-            state["expected_actor"] = "ralph"
-            state["status"] = "waiting-ralph"
-            subject = f"[SYNC i={commit_iter}] actor=galph → next=ralph status=ok galph_commit={sha}"
+            state["step_index"] = step_index + 1
+            state["iteration"] = state["step_index"] + 1
+            state["status"] = "waiting-next"
+            subject = f"[SYNC i={state['iteration']}] step={state['step_index']} status=ok galph_commit={sha}"
         else:
-            state["expected_actor"] = "galph"
             state["status"] = "failed"
-            subject = f"[SYNC i={commit_iter}] actor=galph status=fail galph_commit={sha}"
+            subject = f"[SYNC i={iteration}] step={step_index} status=fail galph_commit={sha}"
     else:  # ralph
         state["ralph_commit"] = sha
         if args.result == "ok":
-            # Increment iteration on success
-            state["iteration"] = iter_no + 1
-            commit_iter = iter_no + 1
-            state["expected_actor"] = "galph"
+            state["step_index"] = step_index + 1
+            state["iteration"] = state["step_index"] + 1
             state["status"] = "complete"
-            subject = f"[SYNC i={commit_iter}] actor=ralph → next=galph status=ok ralph_commit={sha}"
+            subject = f"[SYNC i={state['iteration']}] step={state['step_index']} status=ok ralph_commit={sha}"
         else:
-            state["expected_actor"] = "ralph"
             state["status"] = "failed"
-            subject = f"[SYNC i={commit_iter}] actor=ralph status=fail ralph_commit={sha}"
+            subject = f"[SYNC i={iteration}] step={step_index} status=fail ralph_commit={sha}"
 
     # Write state
     args.state_file.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
@@ -121,4 +120,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

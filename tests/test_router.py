@@ -102,6 +102,9 @@ def test_router_config_loads(tmp_path: Path) -> None:
         "\n".join(
             [
                 "prompts_dir: prompts",
+                "workflow:",
+                "  name: review_cadence",
+                "  review_every_n: 3",
                 "main_prompt: engineer.md",
                 "reviewer_prompt: review.md",
                 "router:",
@@ -120,6 +123,8 @@ def test_router_config_loads(tmp_path: Path) -> None:
     cfg = load_config(config_path=config_path, warn_missing=False)
     assert cfg.main_prompt == "engineer.md"
     assert cfg.reviewer_prompt == "review.md"
+    assert cfg.workflow_name == "review_cadence"
+    assert cfg.workflow_review_every_n == 3
     assert cfg.router_enabled is True
     assert cfg.router_mode == "router_only"
     assert cfg.router_prompt == "router.md"

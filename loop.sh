@@ -1,9 +1,9 @@
 #!/bin/bash
-# Wrapper to run loop (ralph) via Python module.
+# Wrapper to run loop via Python module.
 # Place this at your project root or symlink to it.
 #
 # Usage: ./loop.sh [args...]
-# Example: ./loop.sh --sync-loops 5 --prompt main --logdir logs
+# Example: ./loop.sh --sync-loops 5 --logdir logs
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

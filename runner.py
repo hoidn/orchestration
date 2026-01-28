@@ -176,6 +176,7 @@ def run_turn(
     logger: Logger,
 ) -> TurnResult:
     selection = select_prompt(state, ctx, logger)
+    state.expected_step = selection.selected_prompt
     rc = executor(selection.prompt_path)
     if ctx.use_router:
         state.last_prompt = selection.selected_prompt

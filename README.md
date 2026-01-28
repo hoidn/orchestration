@@ -1,6 +1,6 @@
-# Orchestration Guide (galph ↔ ralph)
+# Orchestration Guide (workflow sequencing)
 
-Portable orchestration for supervisor (galph) and engineer (ralph) agentic loops.
+Portable orchestration for step-based workflows (supervisor + loop runners) with configurable prompt sequencing.
 
 This package can be used as a git submodule across multiple projects. Each project provides its own `orchestration.yaml` configuration file.
 
@@ -15,6 +15,11 @@ git submodule add <remote-url> scripts/orchestration
 Create `orchestration.yaml` in your project root:
 
 ```yaml
+# Workflow sequencing
+workflow:
+  name: standard        # standard | review_cadence
+  review_every_n: 0     # cadence cycles (review_cadence only)
+
 # Prompt paths
 prompts_dir: prompts
 supervisor_prompt: supervisor.md
@@ -60,7 +65,7 @@ router:
 agent:
   default: auto  # auto | claude | codex
   roles:
-    galph: claude
+    galph: claude   # legacy role keys for supervisor/loop runners
     ralph: codex
   prompts:
     supervisor.md: codex
@@ -97,22 +102,24 @@ spec_bootstrap:
 Note: If the `specs.dir` key is omitted, it defaults to `specs/`. Spec shard templates are discovered from `templates_dir/specs/*.md` with a fallback to `templates_dir/docs/spec-shards/*.md` for legacy template layouts. See `docs/index.md` for the full documentation map.
 
 ## Overview
-- Two actors:
-  - `supervisor.sh` → `scripts/orchestration/supervisor.py` (galph)
-  - `loop.sh` → `scripts/orchestration/loop.py` (ralph)
+- Two runners:
+  - `supervisor.sh` → `scripts/orchestration/supervisor.py` (even step_index)
+  - `loop.sh` → `scripts/orchestration/loop.py` (odd step_index)
 - Combined entrypoint:
-  - `orchestrator.sh` → `scripts/orchestration/orchestrator.py` (galph + ralph in one loop)
+  - `orchestrator.sh` → `scripts/orchestration/orchestrator.py` (runs both steps sequentially)
 - Modes:
-  - Async: local, back‑to‑back iterations.
-  - Sync via Git: strict turn‑taking using `sync/state.json` committed and pushed between machines.
+  - Async: local, back‑to‑back steps.
+  - Sync via Git: strict step handoff using `sync/state.json` committed and pushed between machines.
 - Wrappers call Python by default; set `ORCHESTRATION_PYTHON=0` to force legacy bash logic.
 
 ## State File
 - Path: `sync/state.json` (tracked and pushed so both machines see updates)
 - Fields:
-- `iteration` (int)
-- `expected_actor` ("galph" | "ralph")
-- `status` ("idle" | "running-galph" | "waiting-ralph" | "running-ralph" | "complete" | "failed")
+- `workflow_name` (string; default: `standard`)
+- `step_index` (int, 0‑based)
+- `iteration` (int; legacy alias for `step_index + 1`)
+- `expected_step` (string; selected prompt for the current step)
+- `status` ("idle" | "running" | "waiting-next" | "complete" | "failed")
 - `last_update`, `lease_expires_at` (ISO8601)
 - `galph_commit`, `ralph_commit` (short SHAs)
 - `last_prompt` (string; set by router-enabled runs only)
@@ -126,32 +133,32 @@ Note: If the `specs.dir` key is omitted, it defaults to `specs/`. Spec shard tem
 - Iterations: 20 (`--sync-loops N` to change)
 - Poll interval: 5s (`--poll-interval S`)
 - No max wait by default (`--max-wait-sec S` to enable)
-- Loop prompt: `main` (feature work). Switch with `--prompt debug` for parity/trace loops.
+- Workflow: `standard` (supervisor → main). Set `workflow.name: review_cadence` and `workflow.review_every_n` to insert review cycles.
 - Per‑iteration logs under `logs/` (see Logging).
 
 ## Router (optional)
 
-Deterministic routing can select the per-iteration prompt using `sync/state.json` plus a review cadence.
+Deterministic routing selects the per-step prompt using `sync/state.json` plus optional review cadence.
 
-- Deterministic routing uses `expected_actor` + `iteration` to select a prompt.
-- Review cadence: when `review_every_n > 0` and `iteration % review_every_n == 0`, the reviewer prompt is selected.
-- Combined mode note: when review cadence hits on the galph turn, the ralph turn skips the reviewer prompt for that iteration.
+- Deterministic routing uses `workflow_name` + `step_index` to select a prompt.
+- Review cadence: in the `review_cadence` workflow, when `review_every_n > 0` and a cadence cycle hits, both steps in that cycle run `reviewer.md`.
+  - Example (`review_every_n=2`): supervisor, main, reviewer, reviewer, supervisor, main, ...
 - Allowlist enforcement: selected prompts must be in the allowlist and exist on disk.
-- Actor gating: reviewer prompt is allowed for both actors; otherwise the prompt must match the actor default.
 - Optional router prompt override: if configured, a router prompt runs after deterministic selection and may override it.
   - Router output must be a single, non-empty line naming a prompt file.
-  - Invalid output (empty, missing, not allowlisted, or actor-disallowed) aborts the run with a descriptive error.
+  - Invalid output (empty, missing, or not allowlisted) aborts the run with a descriptive error.
 - Router modes:
   - `router_default`: deterministic selection first; router prompt (if configured) may override.
   - `router_first`: router prompt runs first when configured; otherwise deterministic selection is used.
   - `router_only`: router prompt required; deterministic selection is never used.
 - State annotation: when router is enabled, the final selected prompt is stored in `sync/state.json` as `last_prompt` only.
+- No actor gating: router overrides apply to every step (combined/sync), not just supervisor/loop.
 
 Implementation lives in `scripts/orchestration/router.py` with a thin wrapper `scripts/orchestration/router.sh`.
 
 ## Agent Dispatch (optional)
 
-You can route different CLIs per role or per prompt. Resolution precedence:
+You can route different CLIs per role or per prompt. Role keys are legacy runner labels (supervisor/loop) and do not influence prompt selection. Resolution precedence:
 
 1. CLI prompt map (`--agent-prompt`)
 2. CLI role map (`--agent-role`)
@@ -181,14 +188,14 @@ Environment variables:
 ## Sync via Git (two machines)
 1) Preconditions:
    - Both machines share the same remote and branch (e.g., `feature/spec-based-2`).
-   - Ensure `sync/state.json` exists; set `expected_actor` to the actor who should start.
-2) Start supervisor (galph machine):
+   - Ensure `sync/state.json` exists; set `workflow_name` and `step_index` (even = supervisor starts).
+2) Start supervisor (even step index):
    ```bash
    ORCHESTRATION_BRANCH=feature/spec-based-2    ./supervisor.sh --sync-via-git --branch feature/spec-based-2      --sync-loops 20 --logdir logs --verbose --heartbeat-secs 10
    ```
-3) Start loop (ralph machine):
+3) Start loop (odd step index):
    ```bash
-   ORCHESTRATION_BRANCH=feature/spec-based-2    ./loop.sh --sync-via-git --branch feature/spec-based-2      --sync-loops 20 --prompt main --logdir logs
+   ORCHESTRATION_BRANCH=feature/spec-based-2    ./loop.sh --sync-via-git --branch feature/spec-based-2      --sync-loops 20 --logdir logs
    ```
 - Optional wrapper (role-gated orchestrator):
   ```bash
@@ -196,15 +203,15 @@ Environment variables:
   ./orchestrator.sh --mode role --role ralph --sync-via-git --branch feature/spec-based-2 --sync-loops 20 --logdir logs
   ```
 - Handshake:
-  - Galph writes: `expected_actor=ralph`, `status=waiting-ralph`.
-  - Ralph writes: `status=running-ralph`, then on success sets `expected_actor=galph`, `status=complete`, and increments `iteration`.
-  - Supervisor advances when it observes `expected_actor=galph` and `iteration` increased.
+  - Supervisor writes: `status=waiting-next`, increments `step_index` on success.
+  - Loop writes: `status=complete`, increments `step_index` on success.
+  - Supervisor advances when it observes an even `step_index` that has advanced.
 
 ## Async (single machine)
 - Run without `--sync-via-git` to execute N iterations locally (still writes per‑iteration logs):
   ```bash
   ./supervisor.sh --sync-loops 5 --logdir logs
-  ./loop.sh --sync-loops 5 --prompt main --logdir logs
+  ./loop.sh --sync-loops 5 --logdir logs
   ```
 
 ## Combined (single machine)
@@ -216,8 +223,8 @@ Run both actors sequentially in a single process:
 ```
 
 Router notes for combined mode:
-- Review cadence is applied once per iteration (galph only).
-- Router overrides (router prompt output) are applied only to galph; ralph uses deterministic routing.
+- Review cadence is driven by the workflow (review cycles replace both steps when enabled).
+- Router overrides (router prompt output) are applied to every step.
 
 ### Combined auto-commit (local-only)
 - Combined mode can auto-commit doc/meta, reports, and tracked outputs using supervisor defaults.
@@ -228,19 +235,18 @@ Router notes for combined mode:
 
 ## Logging
 - Descriptive per‑iteration logs:
-  - Supervisor: `logs/<branch>/galph/iter-00017_YYYYMMDD_HHMMSS.log`
-  - Loop: `logs/<branch>/ralph/iter-00017_YYYYMMDD_HHMMSS_<prompt>.log`
+  - Step logs: `logs/<branch>/steps/iter-00017_step-0_YYYYMMDD_HHMMSS.log`
+  - Next step: `logs/<branch>/steps/iter-00017_step-1_YYYYMMDD_HHMMSS.log`
 - Configure base directory with `--logdir PATH` (default `logs/`).
-- Markdown summaries accompany the raw logs:
-  - Supervisor summaries: `logs/<branch>/galph-summaries/iter-00017_YYYYMMDD_HHMMSS-summary.md`
-  - Loop summaries: `logs/<branch>/ralph-summaries/iter-00017_YYYYMMDD_HHMMSS-summary.md`
-  - See `docs/logging/log_summary_conventions.md` for the naming contract used by automation.
+- If you generate markdown summaries, keep them next to the raw logs and follow `docs/logging/log_summary_conventions.md` as needed.
 - Supervisor console options:
   - `--verbose`: print state changes to console and log
   - `--heartbeat-secs N`: periodic heartbeat lines while polling
 - `logs/` is ignored by Git.
 
 ### Viewing recent interleaved logs
+
+Note: `tail_interleave_logs` currently targets the legacy galph/ralph log layout; step-based logs will need a follow-up update.
 
 Use the helper script to interleave the last N galph/ralph logs (or markdown summaries) for a branch prefix. Entries are matched on iteration number and wrapped in an XML-like tag with CDATA. The tool annotates each log with the post-state commit that stamped the handoff and can optionally snapshot selected directories from that commit:
 
@@ -286,19 +292,19 @@ Flags of note:
 
 ### Manual state handoff (without running a loop)
 
-Use the stamper to flip sync/state.json to the next actor and publish it without executing a supervisor/loop body:
+Use the stamper to advance `sync/state.json` step index and publish without executing a supervisor/loop body:
 
 ```bash
-# Supervisor hands off to Ralph (success)
+# Supervisor stamps success (advances to next step)
 python -m scripts.orchestration.stamp_handoff galph ok --branch feature/spec-based-2
 
 # Supervisor marks failure (no handoff)
 python -m scripts.orchestration.stamp_handoff galph fail --branch feature/spec-based-2
 
-# Ralph hands off to Supervisor (success; increments iteration)
+# Loop stamps success (advances to next step)
 python -m scripts.orchestration.stamp_handoff ralph ok --branch feature/spec-based-2
 
-# Ralph marks failure (no increment)
+# Loop marks failure (no increment)
 python -m scripts.orchestration.stamp_handoff ralph fail --branch feature/spec-based-2
 ```
 
@@ -307,7 +313,7 @@ Flags:
 - `--allow-dirty` to bypass dirty-tree guard (not recommended)
 
 Notes:
-- Messages and iteration semantics match the orchestrators: Supervisor stamps at the current iteration; Ralph stamps success at the next iteration.
+- Messages and step semantics match the orchestrators: supervisor stamps `waiting-next` and increments `step_index` on success; loop stamps `complete` and increments `step_index` on success.
 - The tool updates `last_update`, `lease_expires_at`, and `galph_commit`/`ralph_commit` using the current HEAD.
 
 ## Flag Reference
@@ -315,6 +321,7 @@ Notes:
   - `--sync-via-git` · `--sync-loops N` · `--poll-interval S` · `--max-wait-sec S`
   - `--branch NAME` (abort if not on this branch)
   - `--logdir PATH` (per‑iteration logs)
+  - `--workflow NAME` · `--workflow-review-every-n N` (workflow sequencing + review cadence)
   - `--verbose` · `--heartbeat-secs N`
   - `--auto-commit-docs` / `--no-auto-commit-docs` (default: on)
     - When enabled, supervisor will auto‑stage+commit changes limited to a doc/meta whitelist after a successful run and before handing off:
@@ -323,7 +330,7 @@ Notes:
       - Any dirty tracked changes outside the whitelist cause a clear error and the handoff is aborted (no state flip)
     - Configure whitelist via `--autocommit-whitelist a,b,c` and size via `--max-autocommit-bytes N`
   - `--tolerate-doc-dirty` to log non-whitelisted dirty paths and continue the handoff (doc/meta auto-commit still runs)
-  - Reports auto-commit (publishes Galph's evidence by file type)
+  - Reports auto-commit (publishes supervisor evidence by file type)
     - `--auto-commit-reports` / `--no-auto-commit-reports` (default: on)
     - `--report-extensions ".png,.jpeg,.npy,.txt,.md,.json,.log,.py,.c,.h,.sh"` — allowed file types (logs + source files/scripts)
     - `--report-path-globs "glob1,glob2"` — optional glob allowlist (default allows any path); logs/`tmp/` are always skipped
@@ -344,9 +351,10 @@ Notes:
     - The pull is retried after each step; if dirty paths remain outside these guards, the supervisor exits with a clear error.
 - Loop
   - `--sync-via-git` · `--sync-loops N` · `--poll-interval S` · `--max-wait-sec S`
-  - `--branch NAME` · `--logdir PATH` · `--prompt {main,debug}`
+  - `--branch NAME` · `--logdir PATH`
+  - `--workflow NAME` · `--workflow-review-every-n N` (workflow sequencing + review cadence)
   - `--allow-dirty` (default: off) to continue when git pull fails (not recommended)
-  - Reports auto-commit (publishes Ralph's evidence by file type)
+  - Reports auto-commit (publishes loop evidence by file type)
     - `--auto-commit-reports` / `--no-auto-commit-reports` (default: on)
     - `--report-extensions ".png,.jpeg,.npy,.log,.txt,.md,.json,.py,.c,.h,.sh"` — allowed file types (including code diffs/scripts)
     - `--report-path-globs "glob1,glob2"` — optional glob allowlist (default allows any path); logs/`tmp/` are always skipped
@@ -356,6 +364,7 @@ Notes:
 
 - Orchestrator (combined mode)
   - `--no-git` · `--commit-dry-run`
+  - `--workflow NAME` · `--workflow-review-every-n N` (workflow sequencing + review cadence)
   - `--auto-commit-docs` / `--no-auto-commit-docs` · `--autocommit-whitelist` · `--max-autocommit-bytes`
   - `--auto-commit-reports` / `--no-auto-commit-reports` · `--report-extensions` · `--report-path-globs`
   - `--auto-commit-tracked-outputs` / `--no-auto-commit-tracked-outputs` · `--tracked-output-globs` · `--tracked-output-extensions`

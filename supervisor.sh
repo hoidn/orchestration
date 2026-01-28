@@ -1,5 +1,5 @@
 #!/bin/bash
-# Wrapper to run supervisor (galph) via Python module.
+# Wrapper to run supervisor via Python module.
 # Place this at your project root or symlink to it.
 #
 # Usage: ./supervisor.sh [args...]

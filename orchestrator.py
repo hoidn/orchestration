@@ -195,13 +195,6 @@ def _parse_allowlist(raw_value: str) -> list[str] | None:
     return allowlist or None
 
 
-def _prompt_map(supervisor_prompt: str, main_prompt: str, reviewer_prompt: str) -> dict[str, str]:
-    prompt_map = {"galph": supervisor_prompt, "ralph": main_prompt}
-    if reviewer_prompt:
-        prompt_map["reviewer"] = reviewer_prompt
-    return prompt_map
-
-
 def _argv_has_flag(argv: list[str], flag: str) -> bool:
     return any(token == flag or token.startswith(f"{flag}=") for token in argv)
 
@@ -231,33 +224,26 @@ def _apply_role_prompt_override(role: str) -> None:
 def build_combined_contexts(
     *,
     prompts_dir: Path,
-    supervisor_prompt: str,
-    main_prompt: str,
-    reviewer_prompt: str,
     allowlist: list[str] | None,
-    review_every_n: int,
+    review_every_n_cycles: int,
     router_mode: str,
     router_output: Optional[str],
     use_router: bool,
 ) -> tuple[RouterContext, RouterContext]:
-    prompt_map = _prompt_map(supervisor_prompt, main_prompt, reviewer_prompt)
     galph_ctx = RouterContext(
         prompts_dir=prompts_dir,
-        prompt_map=prompt_map,
         allowlist=allowlist,
-        review_every_n=review_every_n,
+        review_every_n_cycles=review_every_n_cycles,
         router_mode=router_mode,
         router_output=router_output,
         use_router=use_router,
     )
-    ralph_mode = router_mode if router_mode != "router_only" else "router_default"
     ralph_ctx = RouterContext(
         prompts_dir=prompts_dir,
-        prompt_map=prompt_map,
         allowlist=allowlist,
-        review_every_n=review_every_n,
-        router_mode=ralph_mode,
-        router_output=None,
+        review_every_n_cycles=review_every_n_cycles,
+        router_mode=router_mode,
+        router_output=router_output,
         use_router=use_router,
     )
     return galph_ctx, ralph_ctx
@@ -282,43 +268,42 @@ def run_combined_iteration(
             logger = ralph_logger
         logger(f"[orchestrator] ERROR: {message}")
         if role == "galph":
-            state.stamp(expected_actor="galph", status="failed", galph_commit=short_head())
+            state.stamp(status="failed", galph_commit=short_head())
         else:
-            state.stamp(expected_actor="ralph", status="failed", ralph_commit=short_head())
+            state.stamp(status="failed", ralph_commit=short_head())
         state_writer(state)
         return 2
 
-    state.expected_actor = "galph"
-    state.status = "running-galph"
+    state.status = "running"
     state_writer(state)
 
     try:
-        galph_result = run_turn("galph", state, galph_ctx, galph_executor, galph_logger)
+        galph_result = run_turn(state, galph_ctx, galph_executor, galph_logger)
     except Exception as exc:
         return _fail("galph", f"galph turn failed: {exc}")
     if galph_result.returncode != 0:
-        state.stamp(expected_actor="galph", status="failed", galph_commit=short_head())
+        state.stamp(status="failed", galph_commit=short_head())
         state_writer(state)
         return galph_result.returncode
 
-    state.stamp(expected_actor="ralph", status="waiting-ralph", galph_commit=short_head())
+    state.stamp(status="waiting-next", increment_step=True, galph_commit=short_head())
     state_writer(state)
     if post_turn:
         post_turn("galph", state, galph_logger, galph_result.selected_prompt)
 
-    state.status = "running-ralph"
+    state.status = "running"
     state_writer(state)
 
     try:
-        ralph_result = run_turn("ralph", state, ralph_ctx, ralph_executor, ralph_logger)
+        ralph_result = run_turn(state, ralph_ctx, ralph_executor, ralph_logger)
     except Exception as exc:
         return _fail("ralph", f"ralph turn failed: {exc}")
     if ralph_result.returncode != 0:
-        state.stamp(expected_actor="ralph", status="failed", ralph_commit=short_head())
+        state.stamp(status="failed", ralph_commit=short_head())
         state_writer(state)
         return ralph_result.returncode
 
-    state.stamp(expected_actor="galph", status="complete", increment=True, ralph_commit=short_head())
+    state.stamp(status="complete", increment_step=True, ralph_commit=short_head())
     state_writer(state)
     if post_turn:
         post_turn("ralph", state, ralph_logger, ralph_result.selected_prompt)
@@ -353,6 +338,8 @@ def _run_combined(args, cfg) -> int:
     state_file = args.state_file
     state_file.parent.mkdir(parents=True, exist_ok=True)
     state = OrchestrationState.read(str(state_file)) if state_file.exists() else OrchestrationState()
+    if args.workflow:
+        state.workflow_name = args.workflow
 
     try:
         cli_role_map = parse_agent_map(args.agent_role, normalize_role_key)
@@ -376,10 +363,6 @@ def _run_combined(args, cfg) -> int:
         print(f"[orchestrator] ERROR: {exc}")
         return 2
 
-    main_prompt_name = args.router_prompt_main or args.prompt_main
-    if not main_prompt_name.endswith(".md"):
-        main_prompt_name = f"{main_prompt_name}.md"
-    main_prompt_stem = Path(main_prompt_name).stem
     auto_commit_cfg = _build_autocommit_config(args, cfg)
 
     for _ in range(args.sync_loops):
@@ -391,12 +374,17 @@ def _run_combined(args, cfg) -> int:
         iter_num = state.iteration
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
-        galph_log = args.logdir / branch_target.replace("/", "-") / "galph" / f"iter-{iter_num:05d}_{ts}.log"
+        galph_log = (
+            args.logdir
+            / branch_target.replace("/", "-")
+            / "steps"
+            / f"iter-{iter_num:05d}_step-{state.step_index}_{ts}.log"
+        )
         ralph_log = (
             args.logdir
             / branch_target.replace("/", "-")
-            / "ralph"
-            / f"iter-{iter_num:05d}_{ts}_{main_prompt_stem}.log"
+            / "steps"
+            / f"iter-{iter_num:05d}_step-{state.step_index + 1}_{ts}.log"
         )
         galph_logger = _make_logger(galph_log)
         ralph_logger = _make_logger(ralph_log)
@@ -408,9 +396,9 @@ def _run_combined(args, cfg) -> int:
             logger = galph_logger if role == "galph" else ralph_logger
             logger(f"[orchestrator] ERROR: {message}")
             if role == "galph":
-                state.stamp(expected_actor="galph", status="failed", galph_commit=short_head())
+                state.stamp(status="failed", galph_commit=short_head())
             else:
-                state.stamp(expected_actor="ralph", status="failed", ralph_commit=short_head())
+                state.stamp(status="failed", ralph_commit=short_head())
             _write_state(state)
             return 2
 
@@ -427,11 +415,8 @@ def _run_combined(args, cfg) -> int:
         allowlist = _parse_allowlist(args.router_allowlist)
         galph_ctx, ralph_ctx = build_combined_contexts(
             prompts_dir=cfg.prompts_dir,
-            supervisor_prompt=args.router_prompt_supervisor or args.prompt_supervisor,
-            main_prompt=args.router_prompt_main or args.prompt_main,
-            reviewer_prompt=args.router_prompt_reviewer or args.prompt_reviewer,
             allowlist=allowlist,
-            review_every_n=args.router_review_every_n,
+            review_every_n_cycles=args.workflow_review_every_n,
             router_mode=args.router_mode,
             router_output=router_output,
             use_router=args.use_router,
@@ -524,11 +509,23 @@ def main() -> int:
     ap.add_argument("--use-router", dest="use_router", action="store_true")
     ap.add_argument("--no-router", dest="use_router", action="store_false")
     ap.set_defaults(use_router=cfg.router_enabled)
+    ap.add_argument("--workflow", type=str, default=os.getenv("ORCHESTRATION_WORKFLOW", cfg.workflow_name),
+                    help="Workflow name for prompt sequencing (default: config).")
+    workflow_review_default = os.getenv("ORCHESTRATION_WORKFLOW_REVIEW_EVERY_N")
+    if workflow_review_default is None:
+        workflow_review_default = os.getenv("ROUTER_REVIEW_EVERY_N")
+    if workflow_review_default is None:
+        workflow_review_default = str(cfg.workflow_review_every_n)
+    ap.add_argument("--workflow-review-every-n", type=int,
+                    default=int(workflow_review_default),
+                    help="Review cadence in cycles (workflow review_cadence).")
     ap.add_argument("--router-prompt", type=str, default=os.getenv("ROUTER_PROMPT", cfg.router_prompt or ""))
     ap.add_argument(
         "--router-review-every-n",
+        dest="workflow_review_every_n",
         type=int,
-        default=int(os.getenv("ROUTER_REVIEW_EVERY_N", str(cfg.router_review_every_n))),
+        default=argparse.SUPPRESS,
+        help="Deprecated alias for --workflow-review-every-n.",
     )
     ap.add_argument(
         "--router-allowlist",
@@ -623,6 +620,10 @@ def main() -> int:
             print("[orchestrator] ERROR: role mode requires --sync-via-git.")
             return 2
         _apply_role_prompt_override(args.role)
+        if args.workflow:
+            os.environ["ORCHESTRATION_WORKFLOW"] = args.workflow
+        if hasattr(args, "workflow_review_every_n"):
+            os.environ["ORCHESTRATION_WORKFLOW_REVIEW_EVERY_N"] = str(args.workflow_review_every_n)
         if args.role == "galph":
             return supervisor_main()
         return loop_main()

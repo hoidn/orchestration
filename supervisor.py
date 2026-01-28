@@ -62,10 +62,21 @@ def main() -> int:
     ap.add_argument("--no-router", dest="use_router", action="store_false",
                     help="Disable router prompt selection even if config enables it.")
     ap.set_defaults(use_router=cfg.router_enabled)
+    ap.add_argument("--workflow", type=str, default=os.getenv("ORCHESTRATION_WORKFLOW", cfg.workflow_name),
+                    help="Workflow name for prompt sequencing (default: config).")
+    workflow_review_default = os.getenv("ORCHESTRATION_WORKFLOW_REVIEW_EVERY_N")
+    if workflow_review_default is None:
+        workflow_review_default = os.getenv("ROUTER_REVIEW_EVERY_N")
+    if workflow_review_default is None:
+        workflow_review_default = str(cfg.workflow_review_every_n)
+    ap.add_argument("--workflow-review-every-n", type=int,
+                    default=int(workflow_review_default),
+                    help="Review cadence in cycles (workflow review_cadence).")
     ap.add_argument("--router-prompt", type=str, default=os.getenv("ROUTER_PROMPT", cfg.router_prompt or ""),
                     help="Router prompt file name (relative to prompts_dir) for override decisions.")
-    ap.add_argument("--router-review-every-n", type=int,
-                    default=int(os.getenv("ROUTER_REVIEW_EVERY_N", str(cfg.router_review_every_n))))
+    ap.add_argument("--router-review-every-n", dest="workflow_review_every_n", type=int,
+                    default=argparse.SUPPRESS,
+                    help="Deprecated alias for --workflow-review-every-n.")
     ap.add_argument("--router-allowlist", type=str,
                     default=os.getenv("ROUTER_ALLOWLIST", ",".join(cfg.router_allowlist)))
     ap.add_argument("--router-prompt-supervisor", type=str,
@@ -382,15 +393,6 @@ def main() -> int:
                 f.write(msg + "\n")
         return _log
 
-    def _router_prompt_map() -> dict[str, str]:
-        prompt_map = {
-            "galph": args.router_prompt_supervisor,
-            "ralph": args.router_prompt_main,
-        }
-        if args.router_prompt_reviewer:
-            prompt_map["reviewer"] = args.router_prompt_reviewer
-        return prompt_map
-
     def _router_allowlist() -> list[str] | None:
         allowlist = [item.strip() for item in args.router_allowlist.split(",") if item.strip()]
         return allowlist or None
@@ -400,9 +402,11 @@ def main() -> int:
             state = OrchestrationState.read(str(args.state_file))
         else:
             state = OrchestrationState()
+        if args.workflow:
+            state.workflow_name = args.workflow
         if not args.sync_via_git:
-            state.expected_actor = "galph"
             if iteration_override is not None:
+                state.step_index = max(0, iteration_override - 1)
                 state.iteration = iteration_override
         return state
 
@@ -420,18 +424,10 @@ def main() -> int:
         *,
         iteration_override: int | None = None,
     ) -> tuple[Path, OrchestrationState, str | None]:
-        if not args.use_router:
-            prompt_name = args.prompt if args.prompt else cfg.supervisor_prompt
-            if not prompt_name.endswith(".md"):
-                prompt_name = f"{prompt_name}.md"
-            prompt_path = cfg.prompts_dir / prompt_name
-            return prompt_path, OrchestrationState(), prompt_name
-
         state = _router_state(iteration_override)
-        prompt_map = _router_prompt_map()
         allowlist = _router_allowlist()
         router_output = None
-        if args.router_prompt:
+        if args.use_router and args.router_prompt:
             if cmd is None:
                 raise RuntimeError("Router prompt requires agent CLI but no command was resolved.")
             router_prompt_path = resolve_prompt_path(args.router_prompt, cfg.prompts_dir)
@@ -441,12 +437,11 @@ def main() -> int:
 
         ctx = RouterContext(
             prompts_dir=cfg.prompts_dir,
-            prompt_map=prompt_map,
             allowlist=allowlist,
-            review_every_n=args.router_review_every_n,
+            review_every_n_cycles=args.workflow_review_every_n,
             router_mode=args.router_mode,
             router_output=router_output,
-            use_router=True,
+            use_router=args.use_router,
         )
         selection = select_prompt(state, ctx, logger)
         return selection.prompt_path, state, selection.selected_prompt
@@ -500,6 +495,9 @@ def main() -> int:
             except (json.JSONDecodeError, IOError):
                 pass
         return False, ""
+
+    def _is_supervisor_turn(state: OrchestrationState) -> bool:
+        return state.step_index % 2 == 0
 
     if not args.sync_via_git:
         # Legacy async mode: run N iterations back-to-back
@@ -582,11 +580,10 @@ def main() -> int:
             st_probe = OrchestrationState.read(str(args.state_file))
         else:
             st_probe = OrchestrationState()
-            st_probe.expected_actor = "galph"
             st_probe.status = "idle"
         itnum = st_probe.iteration
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        iter_log = args.logdir / branch_target.replace('/', '-') / "galph" / f"iter-{itnum:05d}_{ts}.log"
+        iter_log = args.logdir / branch_target.replace('/', '-') / "steps" / f"iter-{itnum:05d}_step-{st_probe.step_index}_{ts}.log"
         logp = make_logger(iter_log)
 
         # Skip git pull if --no-git; otherwise do the pre-wait pull
@@ -610,7 +607,7 @@ def main() -> int:
 
             # Resume mode: if a local stamped handoff exists but isn't pushed yet, publish and skip work
             st_local_probe = OrchestrationState.read(str(args.state_file))
-            if (st_local_probe.expected_actor != "galph" or st_local_probe.status in {"waiting-ralph", "failed"}) and has_unpushed_commits():
+            if (not _is_supervisor_turn(st_local_probe) or st_local_probe.status in {"waiting-next", "failed"}) and has_unpushed_commits():
                 logp("[sync] Detected local stamped handoff with unpushed commits; attempting push-only reconciliation.")
                 if not push_with_rebase(branch_target, logp):
                     print("[sync] ERROR: failed to push local stamped handoff; resolve and retry.")
@@ -621,7 +618,8 @@ def main() -> int:
         # Initialize state if missing
         if not args.state_file.exists():
             st_init = OrchestrationState()
-            st_init.expected_actor = "galph"
+            if args.workflow:
+                st_init.workflow_name = args.workflow
             st_init.status = "idle"
             st_init.write(str(args.state_file))
             if not args.no_git:
@@ -634,7 +632,7 @@ def main() -> int:
             logp("[no-git] Skipping turn wait; running locally")
             st = OrchestrationState.read(str(args.state_file)) if args.state_file.exists() else OrchestrationState()
         else:
-            logp("Waiting for expected_actor=galph...")
+            logp("Waiting for step_index (even) ...")
             start = time.time()
             last_hb = start
             prev_state = None
@@ -642,12 +640,12 @@ def main() -> int:
                 if not _pull_with_error(logp, "polling"):
                     return 1
                 st = OrchestrationState.read(str(args.state_file))
-                cur_state = (st.expected_actor, st.status, st.iteration)
+                cur_state = (st.step_index, st.status, st.iteration)
                 if args.verbose and cur_state != prev_state:
-                    print(f"[sync] state: actor={st.expected_actor} status={st.status} iter={st.iteration}")
-                    logp(f"[sync] state: actor={st.expected_actor} status={st.status} iter={st.iteration}")
+                    print(f"[sync] state: step_index={st.step_index} status={st.status} iter={st.iteration}")
+                    logp(f"[sync] state: step_index={st.step_index} status={st.status} iter={st.iteration}")
                     prev_state = cur_state
-                if st.expected_actor == "galph":
+                if _is_supervisor_turn(st):
                     break
                 if args.max_wait_sec and (time.time() - start) > args.max_wait_sec:
                     logp("Timeout waiting for galph turn")
@@ -678,14 +676,16 @@ def main() -> int:
             return 2
 
         st = OrchestrationState.read(str(args.state_file)) if args.state_file.exists() else OrchestrationState()
+        if args.workflow:
+            st.workflow_name = args.workflow
         if args.use_router:
             st.last_prompt = selected_prompt
-            st.last_prompt_actor = "galph"
-        st.status = "running-galph"
+        st.expected_step = selected_prompt
+        st.status = "running"
         st.write(str(args.state_file))
         if not args.no_git:
             add([str(args.state_file)])
-            commit(f"[SYNC i={st.iteration}] actor=galph status=running")
+            commit(f"[SYNC i={st.iteration}] step={st.step_index} status=running")
             push_to(branch_target, logp)
 
         rc = tee_run(selection.cmd, prompt_file, iter_log)
@@ -732,18 +732,20 @@ def main() -> int:
 
         # Stamp FIRST (idempotent): write local handoff or failure before any pushes
         st = OrchestrationState.read(str(args.state_file)) if args.state_file.exists() else OrchestrationState()
+        if args.workflow:
+            st.workflow_name = args.workflow
         if post_ok:
-            st.stamp(expected_actor="ralph", status="waiting-ralph", galph_commit=sha)
+            st.stamp(status="waiting-next", increment_step=True, galph_commit=sha)
             st.write(str(args.state_file))
             if not args.no_git:
                 add([str(args.state_file)])
-                commit(f"[SYNC i={st.iteration}] actor=galph → next=ralph status=ok galph_commit={sha}")
+                commit(f"[SYNC i={st.iteration}] step={st.step_index} status=ok galph_commit={sha}")
         else:
-            st.stamp(expected_actor="galph", status="failed", galph_commit=sha)
+            st.stamp(status="failed", galph_commit=sha)
             st.write(str(args.state_file))
             if not args.no_git:
                 add([str(args.state_file)])
-                commit(f"[SYNC i={st.iteration}] actor=galph status=fail galph_commit={sha}")
+                commit(f"[SYNC i={st.iteration}] step={st.step_index} status=fail galph_commit={sha}")
 
         # Publish stamped state (skip if --no-git). If push fails, exit; restart will resume push without re-running work.
         if not args.no_git:
@@ -756,14 +758,14 @@ def main() -> int:
 
         # Wait for Ralph to finish and increment iteration (skip if --no-git since we're running locally)
         if args.no_git:
-            logp(f"[no-git] Skipping wait for Ralph; incrementing iteration locally")
-            st.iteration += 1
-            st.expected_actor = "galph"
+            logp("[no-git] Skipping wait for next step; advancing locally")
+            st.step_index += 1
+            st.iteration = st.step_index + 1
             st.status = "complete"
             st.write(str(args.state_file))
         else:
-            logp(f"Waiting for Ralph to complete i={st.iteration}...")
-            current_iter = st.iteration
+            logp(f"Waiting for next step completion (step_index={st.step_index})...")
+            current_step = st.step_index
             start2 = time.time()
             last_hb2 = start2
             prev_state2 = None
@@ -771,17 +773,17 @@ def main() -> int:
                 if not _pull_with_error(logp, "wait-for-ralph"):
                     return 1
                 st2 = OrchestrationState.read(str(args.state_file))
-                cur_state2 = (st2.expected_actor, st2.status, st2.iteration)
+                cur_state2 = (st2.step_index, st2.status, st2.iteration)
                 if args.verbose and cur_state2 != prev_state2:
-                    print(f"[sync] state: actor={st2.expected_actor} status={st2.status} iter={st2.iteration}")
-                    logp(f"[sync] state: actor={st2.expected_actor} status={st2.status} iter={st2.iteration}")
+                    print(f"[sync] state: step_index={st2.step_index} status={st2.status} iter={st2.iteration}")
+                    logp(f"[sync] state: step_index={st2.step_index} status={st2.status} iter={st2.iteration}")
                     prev_state2 = cur_state2
-                if st2.expected_actor == "galph" and st2.iteration > current_iter:
-                    logp(f"Ralph completed iteration {current_iter}; proceeding to {st2.iteration}")
+                if _is_supervisor_turn(st2) and st2.step_index > current_step:
+                    logp(f"Next step completed; proceeding at step_index={st2.step_index}")
                     break
                 if args.heartbeat_secs and (time.time() - last_hb2) >= args.heartbeat_secs:
                     elapsed = int(time.time() - start2)
-                    msg = f"[sync] waiting for ralph… {elapsed}s elapsed (i={current_iter})"
+                    msg = f"[sync] waiting for next step… {elapsed}s elapsed (step_index={current_step})"
                     print(msg)
                     logp(msg)
                     last_hb2 = time.time()

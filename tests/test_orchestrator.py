@@ -21,25 +21,37 @@ def _write_prompt(path: Path) -> None:
     path.write_text("prompt", encoding="utf-8")
 
 
+def _build_contexts(
+    *,
+    prompts_dir: Path,
+    allowlist: list[str],
+    review_every_n_cycles: int = 0,
+    router_mode: str = "router_default",
+    router_output: str | None = None,
+    use_router: bool = False,
+) -> tuple:
+    return build_combined_contexts(
+        prompts_dir=prompts_dir,
+        allowlist=allowlist,
+        review_every_n_cycles=review_every_n_cycles,
+        router_mode=router_mode,
+        router_output=router_output,
+        use_router=use_router,
+    )
+
+
 def test_combined_sequence(tmp_path: Path) -> None:
     prompts_dir = tmp_path / "prompts"
     prompts_dir.mkdir()
     for name in ("supervisor.md", "main.md", "reviewer.md"):
         _write_prompt(prompts_dir / name)
 
-    state = OrchestrationState(iteration=1, expected_actor="galph", status="idle")
+    state = OrchestrationState(workflow_name="standard", step_index=0, iteration=1, status="idle")
     allowlist = ["supervisor.md", "main.md", "reviewer.md"]
 
-    galph_ctx, ralph_ctx = build_combined_contexts(
+    galph_ctx, ralph_ctx = _build_contexts(
         prompts_dir=prompts_dir,
-        supervisor_prompt="supervisor.md",
-        main_prompt="main.md",
-        reviewer_prompt="reviewer.md",
         allowlist=allowlist,
-        review_every_n=0,
-        router_mode="router_default",
-        router_output=None,
-        use_router=False,
     )
 
     executed: list[str] = []
@@ -61,8 +73,9 @@ def test_combined_sequence(tmp_path: Path) -> None:
 
     assert rc == 0
     assert executed == ["supervisor.md", "main.md"]
-    assert state.iteration == 2
-    assert state.expected_actor == "galph"
+    assert state.step_index == 2
+    assert state.iteration == 3
+    assert state.expected_step == "main.md"
     assert state.status == "complete"
 
 
@@ -72,18 +85,13 @@ def test_review_cadence_single(tmp_path: Path) -> None:
     for name in ("supervisor.md", "main.md", "reviewer.md"):
         _write_prompt(prompts_dir / name)
 
-    state = OrchestrationState(iteration=1, expected_actor="galph", status="idle")
+    state = OrchestrationState(workflow_name="review_cadence", step_index=0, iteration=1, status="idle")
     allowlist = ["supervisor.md", "main.md", "reviewer.md"]
 
-    galph_ctx, ralph_ctx = build_combined_contexts(
+    galph_ctx, ralph_ctx = _build_contexts(
         prompts_dir=prompts_dir,
-        supervisor_prompt="supervisor.md",
-        main_prompt="main.md",
-        reviewer_prompt="reviewer.md",
         allowlist=allowlist,
-        review_every_n=1,
-        router_mode="router_default",
-        router_output=None,
+        review_every_n_cycles=1,
         use_router=True,
     )
 
@@ -105,27 +113,23 @@ def test_review_cadence_single(tmp_path: Path) -> None:
     )
 
     assert rc == 0
-    assert executed == ["reviewer.md", "main.md"]
-    assert state.last_prompt == "main.md"
+    assert executed == ["reviewer.md", "reviewer.md"]
+    assert state.last_prompt == "reviewer.md"
 
 
-def test_router_override_galph_only(tmp_path: Path) -> None:
+def test_router_override_applies_to_steps(tmp_path: Path) -> None:
     prompts_dir = tmp_path / "prompts"
     prompts_dir.mkdir()
     for name in ("supervisor.md", "main.md", "reviewer.md"):
         _write_prompt(prompts_dir / name)
 
-    state = OrchestrationState(iteration=3, expected_actor="galph", status="idle")
+    state = OrchestrationState(workflow_name="standard", step_index=0, iteration=1, status="idle")
     allowlist = ["supervisor.md", "main.md", "reviewer.md"]
 
-    galph_ctx, ralph_ctx = build_combined_contexts(
+    galph_ctx, ralph_ctx = _build_contexts(
         prompts_dir=prompts_dir,
-        supervisor_prompt="supervisor.md",
-        main_prompt="main.md",
-        reviewer_prompt="reviewer.md",
         allowlist=allowlist,
-        review_every_n=0,
-        router_mode="router_default",
+        review_every_n_cycles=0,
         router_output="reviewer.md",
         use_router=True,
     )
@@ -148,26 +152,21 @@ def test_router_override_galph_only(tmp_path: Path) -> None:
     )
 
     assert rc == 0
-    assert executed == ["reviewer.md", "main.md"]
+    assert executed == ["reviewer.md", "reviewer.md"]
 
 
-def test_router_disabled_uses_actor_prompts(tmp_path: Path) -> None:
+def test_router_disabled_uses_workflow_prompts(tmp_path: Path) -> None:
     prompts_dir = tmp_path / "prompts"
     prompts_dir.mkdir()
     for name in ("supervisor.md", "main.md", "reviewer.md"):
         _write_prompt(prompts_dir / name)
 
-    state = OrchestrationState(iteration=2, expected_actor="galph", status="idle")
+    state = OrchestrationState(workflow_name="standard", step_index=0, iteration=1, status="idle")
     allowlist = ["supervisor.md", "main.md", "reviewer.md"]
 
-    galph_ctx, ralph_ctx = build_combined_contexts(
+    galph_ctx, ralph_ctx = _build_contexts(
         prompts_dir=prompts_dir,
-        supervisor_prompt="supervisor.md",
-        main_prompt="main.md",
-        reviewer_prompt="reviewer.md",
         allowlist=allowlist,
-        review_every_n=1,
-        router_mode="router_default",
         router_output="reviewer.md",
         use_router=False,
     )
@@ -199,19 +198,12 @@ def test_combined_missing_prompt_marks_failed(tmp_path: Path) -> None:
     for name in ("main.md", "reviewer.md"):
         _write_prompt(prompts_dir / name)
 
-    state = OrchestrationState(iteration=1, expected_actor="galph", status="idle")
+    state = OrchestrationState(workflow_name="standard", step_index=0, iteration=1, status="idle")
     allowlist = ["supervisor.md", "main.md", "reviewer.md"]
 
-    galph_ctx, ralph_ctx = build_combined_contexts(
+    galph_ctx, ralph_ctx = _build_contexts(
         prompts_dir=prompts_dir,
-        supervisor_prompt="supervisor.md",
-        main_prompt="main.md",
-        reviewer_prompt="reviewer.md",
         allowlist=allowlist,
-        review_every_n=0,
-        router_mode="router_default",
-        router_output=None,
-        use_router=False,
     )
 
     errors: list[str] = []
@@ -232,8 +224,9 @@ def test_combined_missing_prompt_marks_failed(tmp_path: Path) -> None:
 
     assert rc == 2
     assert state.status == "failed"
-    assert state.expected_actor == "galph"
+    assert state.step_index == 0
     assert state.iteration == 1
+    assert state.expected_step is None
     assert any("galph turn failed" in msg for msg in errors)
 
 
@@ -243,18 +236,13 @@ def test_router_only_without_output_marks_failed(tmp_path: Path) -> None:
     for name in ("supervisor.md", "main.md", "reviewer.md"):
         _write_prompt(prompts_dir / name)
 
-    state = OrchestrationState(iteration=1, expected_actor="galph", status="idle")
+    state = OrchestrationState(workflow_name="standard", step_index=0, iteration=1, status="idle")
     allowlist = ["supervisor.md", "main.md", "reviewer.md"]
 
-    galph_ctx, ralph_ctx = build_combined_contexts(
+    galph_ctx, ralph_ctx = _build_contexts(
         prompts_dir=prompts_dir,
-        supervisor_prompt="supervisor.md",
-        main_prompt="main.md",
-        reviewer_prompt="reviewer.md",
         allowlist=allowlist,
-        review_every_n=0,
         router_mode="router_only",
-        router_output=None,
         use_router=True,
     )
 
@@ -276,7 +264,7 @@ def test_router_only_without_output_marks_failed(tmp_path: Path) -> None:
 
     assert rc == 2
     assert state.status == "failed"
-    assert state.expected_actor == "galph"
+    assert state.step_index == 0
     assert state.iteration == 1
     assert any("router_only" in msg for msg in errors)
 
@@ -287,19 +275,12 @@ def test_combined_autocommit_after_turns(tmp_path: Path) -> None:
     for name in ("supervisor.md", "main.md", "reviewer.md"):
         _write_prompt(prompts_dir / name)
 
-    state = OrchestrationState(iteration=1, expected_actor="galph", status="idle")
+    state = OrchestrationState(workflow_name="standard", step_index=0, iteration=1, status="idle")
     allowlist = ["supervisor.md", "main.md", "reviewer.md"]
 
-    galph_ctx, ralph_ctx = build_combined_contexts(
+    galph_ctx, ralph_ctx = _build_contexts(
         prompts_dir=prompts_dir,
-        supervisor_prompt="supervisor.md",
-        main_prompt="main.md",
-        reviewer_prompt="reviewer.md",
         allowlist=allowlist,
-        review_every_n=0,
-        router_mode="router_default",
-        router_output=None,
-        use_router=False,
     )
 
     calls: list[str] = []
@@ -730,74 +711,3 @@ def test_role_mode_forwards_loop_prompt(monkeypatch) -> None:
     assert captured["value"] == "custom_main.md"
     assert called["supervisor"] is False
 
-
-def test_combined_review_last_prompt_actor(tmp_path: Path) -> None:
-    """Verify combined mode honors last_prompt_actor for review cadence.
-
-    This regression test ensures that when review_every_n triggers a review
-    cadence hit, the reviewer runs only once (on galph's turn), and ralph
-    correctly skips the reviewer because last_prompt_actor is set to 'galph'.
-
-    Without the last_prompt_actor annotation (the fix from ORCH-ROUTER-001),
-    both galph and ralph would select reviewer.md on cadence iterations.
-
-    Reference: scripts/orchestration/README.md:130 (authoritative cadence behavior)
-    Reference: scripts/orchestration/tests/test_sync_router_review.py (sync parity tests)
-    """
-    prompts_dir = tmp_path / "prompts"
-    prompts_dir.mkdir()
-    for name in ("supervisor.md", "main.md", "reviewer.md"):
-        _write_prompt(prompts_dir / name)
-
-    # Iteration 2 with review_every_n=2 triggers cadence
-    state = OrchestrationState(iteration=2, expected_actor="galph", status="idle")
-    allowlist = ["supervisor.md", "main.md", "reviewer.md"]
-
-    galph_ctx, ralph_ctx = build_combined_contexts(
-        prompts_dir=prompts_dir,
-        supervisor_prompt="supervisor.md",
-        main_prompt="main.md",
-        reviewer_prompt="reviewer.md",
-        allowlist=allowlist,
-        review_every_n=2,
-        router_mode="router_default",
-        router_output=None,
-        use_router=True,
-    )
-
-    executed: list[str] = []
-    state_snapshots: list[tuple[str, str | None]] = []
-
-    def _exec(prompt_path: Path) -> int:
-        executed.append(prompt_path.name)
-        return 0
-
-    def _state_writer(st: OrchestrationState) -> None:
-        # Capture state snapshots to verify last_prompt_actor transitions
-        state_snapshots.append((st.expected_actor, st.last_prompt_actor))
-
-    rc = run_combined_iteration(
-        state=state,
-        galph_ctx=galph_ctx,
-        ralph_ctx=ralph_ctx,
-        galph_executor=_exec,
-        ralph_executor=_exec,
-        galph_logger=lambda _: None,
-        ralph_logger=lambda _: None,
-        state_writer=_state_writer,
-    )
-
-    assert rc == 0
-    # On cadence iteration, galph runs reviewer, ralph runs main
-    assert executed == ["reviewer.md", "main.md"]
-    # After galph turn: expected_actor=ralph, last_prompt_actor=galph
-    # After ralph turn: expected_actor=galph (incremented iteration)
-    assert state.last_prompt == "main.md"
-    assert state.last_prompt_actor == "ralph"
-    # Verify the state transitions captured by _state_writer
-    # Transitions: galph->running, galph->waiting-ralph, ralph->running, ralph->complete
-    assert len(state_snapshots) >= 3
-    # After galph turn, last_prompt_actor should be 'galph'
-    # so ralph knows to skip reviewer
-    galph_done_snapshot = [s for s in state_snapshots if s[0] == "ralph" and s[1] == "galph"]
-    assert galph_done_snapshot, "last_prompt_actor should be 'galph' after galph turn"

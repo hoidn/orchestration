@@ -1,7 +1,7 @@
 """
 Orchestration configuration loader.
 
-Provides portable config lookup for galph/ralph orchestration scripts.
+Provides portable config lookup for workflow-based orchestration scripts.
 Config is loaded from orchestration.yaml found by searching upward from CWD,
 with sensible defaults when no config file exists.
 """
@@ -32,6 +32,10 @@ class OrchConfig:
     supervisor_prompt: str = "supervisor.md"
     main_prompt: str = "main.md"
     reviewer_prompt: str = "reviewer.md"
+
+    # Workflow sequencing
+    workflow_name: str = "standard"
+    workflow_review_every_n: int = 0
 
     # Router configuration
     router_enabled: bool = False
@@ -251,6 +255,23 @@ def load_config(config_path: Optional[Path] = None, warn_missing: bool = True) -
     if "router_mode" in data:
         cfg.router_mode = str(data["router_mode"])
 
+    # Workflow settings (top-level)
+    workflow_review_seen = False
+    if "workflow_name" in data:
+        cfg.workflow_name = str(data["workflow_name"])
+    if "workflow_review_every_n" in data:
+        cfg.workflow_review_every_n = int(data["workflow_review_every_n"])
+        workflow_review_seen = True
+
+    # Workflow settings (nested section)
+    if "workflow" in data:
+        workflow = data["workflow"] or {}
+        if "name" in workflow:
+            cfg.workflow_name = str(workflow["name"])
+        if "review_every_n" in workflow:
+            cfg.workflow_review_every_n = int(workflow["review_every_n"])
+            workflow_review_seen = True
+
     # Router settings (nested section)
     if "router" in data:
         router = data["router"] or {}
@@ -264,6 +285,10 @@ def load_config(config_path: Optional[Path] = None, warn_missing: bool = True) -
             cfg.router_allowlist = list(router["allowlist"])
         if "mode" in router:
             cfg.router_mode = str(router["mode"])
+
+    # Back-compat: if workflow review cadence not explicitly set, inherit router cadence.
+    if not workflow_review_seen and cfg.router_review_every_n:
+        cfg.workflow_review_every_n = int(cfg.router_review_every_n)
 
     # Agent dispatch settings (nested section)
     if "agent" in data:
