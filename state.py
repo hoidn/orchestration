@@ -21,15 +21,16 @@ def _lease_expires_iso(minutes: int = 10) -> str:
 
 @dataclass
 class OrchestrationState:
+    workflow_name: str = "standard"
+    step_index: int = 0
     iteration: int = 1
-    expected_actor: str = "galph"  # "galph" | "ralph"
-    status: str = "idle"  # "idle" | "running-galph" | "waiting-ralph" | "running-ralph" | "complete" | "failed"
+    expected_step: Optional[str] = None
+    status: str = "idle"  # "idle" | "running" | "waiting-next" | "complete" | "failed"
     last_update: str = field(default_factory=_utc_now_iso)
     lease_expires_at: str = field(default_factory=_lease_expires_iso)
     galph_commit: Optional[str] = None
     ralph_commit: Optional[str] = None
     last_prompt: Optional[str] = None
-    last_prompt_actor: Optional[str] = None
 
     @staticmethod
     def read(path: str) -> "OrchestrationState":
@@ -39,16 +40,21 @@ class OrchestrationState:
         except Exception:
             return OrchestrationState()
 
+        raw_iteration = int(data.get("iteration", 1))
+        step_index = int(data.get("step_index", max(0, raw_iteration - 1)))
+        iteration = int(data.get("iteration", step_index + 1))
+
         return OrchestrationState(
-            iteration=int(data.get("iteration", 1)),
-            expected_actor=str(data.get("expected_actor", "galph")),
+            workflow_name=str(data.get("workflow_name", "standard")),
+            step_index=step_index,
+            iteration=iteration,
+            expected_step=data.get("expected_step"),
             status=str(data.get("status", "idle")),
             last_update=str(data.get("last_update", _utc_now_iso())),
             lease_expires_at=str(data.get("lease_expires_at", _lease_expires_iso())),
             galph_commit=data.get("galph_commit"),
             ralph_commit=data.get("ralph_commit"),
             last_prompt=data.get("last_prompt"),
-            last_prompt_actor=data.get("last_prompt_actor"),
         )
 
     def write(self, path: str) -> None:
@@ -66,15 +72,22 @@ class OrchestrationState:
             except Exception:
                 pass
 
-    def stamp(self, *, expected_actor: Optional[str] = None, status: Optional[str] = None,
-              increment: bool = False, galph_commit: Optional[str] = None,
-              ralph_commit: Optional[str] = None) -> None:
-        if expected_actor is not None:
-            self.expected_actor = expected_actor
+    def stamp(
+        self,
+        *,
+        expected_step: Optional[str] = None,
+        status: Optional[str] = None,
+        increment_step: bool = False,
+        galph_commit: Optional[str] = None,
+        ralph_commit: Optional[str] = None,
+    ) -> None:
+        if expected_step is not None:
+            self.expected_step = expected_step
         if status is not None:
             self.status = status
-        if increment:
-            self.iteration += 1
+        if increment_step:
+            self.step_index += 1
+            self.iteration = self.step_index + 1
         if galph_commit:
             self.galph_commit = galph_commit
         if ralph_commit:
