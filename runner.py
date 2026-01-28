@@ -57,6 +57,8 @@ def log_file(prefix: str, tmp_dir: Path = Path("tmp")) -> Path:
 
 def tee_run(cmd: list[str], stdin_file: Path | None, log_path: Path) -> int:
     """Run command with output tee'd to a log file using non-blocking I/O."""
+    import os
+    import pty
     import select
 
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -66,6 +68,50 @@ def tee_run(cmd: list[str], stdin_file: Path | None, log_path: Path) -> int:
 
         fin = open(stdin_file, "rb") if stdin_file else open("/dev/null", "rb")
         try:
+            use_pty = os.getenv("ORCHESTRATION_USE_PTY", "1").strip().lower() not in {"0", "false", "no"}
+
+            def _write_chunk(chunk: bytes) -> None:
+                if not chunk:
+                    return
+                text = chunk.decode("utf-8", errors="replace")
+                sys.stdout.write(text)
+                sys.stdout.flush()
+                flog.write(text)
+                flog.flush()
+
+            if use_pty:
+                master_fd, slave_fd = pty.openpty()
+                try:
+                    proc = Popen(cmd, stdin=fin, stdout=slave_fd, stderr=slave_fd, bufsize=0, close_fds=True)
+                finally:
+                    os.close(slave_fd)
+
+                try:
+                    while True:
+                        readable, _, _ = select.select([master_fd], [], [], 0.1)
+                        if master_fd in readable:
+                            try:
+                                chunk = os.read(master_fd, 4096)
+                            except OSError:
+                                chunk = b""
+                            if chunk:
+                                _write_chunk(chunk)
+                            elif proc.poll() is not None:
+                                break
+                        if proc.poll() is not None and not readable:
+                            try:
+                                chunk = os.read(master_fd, 4096)
+                            except OSError:
+                                chunk = b""
+                            if chunk:
+                                _write_chunk(chunk)
+                            else:
+                                break
+                finally:
+                    os.close(master_fd)
+
+                return proc.returncode
+
             proc = Popen(cmd, stdin=fin, stdout=PIPE, stderr=PIPE, bufsize=0)
 
             stdout_fd = proc.stdout.fileno() if proc.stdout else -1
@@ -82,11 +128,7 @@ def tee_run(cmd: list[str], stdin_file: Path | None, log_path: Path) -> int:
                 if stdout_fd in readable and proc.stdout:
                     chunk = proc.stdout.read(4096)
                     if chunk:
-                        text = chunk.decode("utf-8", errors="replace")
-                        sys.stdout.write(text)
-                        sys.stdout.flush()
-                        flog.write(text)
-                        flog.flush()
+                        _write_chunk(chunk)
 
                 if stderr_fd in readable and proc.stderr:
                     chunk = proc.stderr.read(4096)
@@ -101,10 +143,7 @@ def tee_run(cmd: list[str], stdin_file: Path | None, log_path: Path) -> int:
                     if proc.stdout:
                         remaining = proc.stdout.read()
                         if remaining:
-                            text = remaining.decode("utf-8", errors="replace")
-                            sys.stdout.write(text)
-                            sys.stdout.flush()
-                            flog.write(text)
+                            _write_chunk(remaining)
                     if proc.stderr:
                         remaining = proc.stderr.read()
                         if remaining:

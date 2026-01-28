@@ -371,6 +371,7 @@ Notes:
   - Notes: local-only auto-commit uses supervisor defaults; best-effort warnings on non-whitelist dirt.
 
 ## Troubleshooting
+- No live console output: the runner uses a pseudo‑TTY by default to encourage streaming from agent CLIs. If you need the old pipe behavior, set `ORCHESTRATION_USE_PTY=0`.
 - Pull failures: both orchestrators now fail fast on git pull errors (including untracked‑file or local‑modification collisions). Read the console/log message, resolve locally (commit/stash/move), and rerun.
 - Submodule pointer drift: if `.claude/` or other gitlinks appear dirty, the supervisor auto-scrubs submodules (sync + update with `--checkout --force`) before retries. This is idempotent and does not commit pointer bumps; it aligns worktrees to the recorded superproject commits.
 - Push rejected / rebase in progress: orchestrators auto‑abort in‑progress rebase before pulling. If conflicts arise, fix them locally, commit, and rerun.
