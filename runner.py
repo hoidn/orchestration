@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from subprocess import PIPE, Popen, run
-from typing import Callable, Iterable, Mapping, Optional
+from typing import Callable, Iterable, Optional
 
 from .router import RouterDecision, log_router_decision, resolve_prompt_path, select_prompt_with_mode
 from .state import OrchestrationState
@@ -18,9 +18,8 @@ Logger = Callable[[str], None]
 @dataclass(frozen=True)
 class RouterContext:
     prompts_dir: Path
-    prompt_map: Mapping[str, str]
     allowlist: Optional[Iterable[str]]
-    review_every_n: int
+    review_every_n_cycles: int
     router_mode: str | None = None
     router_output: Optional[str] = None
     use_router: bool = False
@@ -138,18 +137,24 @@ def run_router_prompt(cmd: list[str], prompt_path: Path, logger: Logger) -> str:
 
 def select_prompt(state: OrchestrationState, ctx: RouterContext, logger: Logger) -> PromptSelection:
     if not ctx.use_router:
-        prompt_name = ctx.prompt_map[state.expected_actor]
-        if not prompt_name.endswith(".md"):
-            prompt_name = f"{prompt_name}.md"
-        prompt_path = resolve_prompt_path(prompt_name, ctx.prompts_dir)
-        if not prompt_path.exists():
-            raise FileNotFoundError(f"Prompt file not found: {prompt_path}")
-        return PromptSelection(prompt_path=prompt_path, selected_prompt=prompt_name)
+        decision = select_prompt_with_mode(
+            state,
+            ctx.review_every_n_cycles,
+            allowlist=ctx.allowlist,
+            prompts_dir=ctx.prompts_dir,
+            router_mode=ctx.router_mode,
+            router_output=None,
+        )
+        prompt_path = resolve_prompt_path(decision.selected_prompt, ctx.prompts_dir)
+        return PromptSelection(
+            prompt_path=prompt_path,
+            selected_prompt=decision.selected_prompt,
+            decision=decision,
+        )
 
     decision = select_prompt_with_mode(
         state,
-        ctx.prompt_map,
-        ctx.review_every_n,
+        ctx.review_every_n_cycles,
         allowlist=ctx.allowlist,
         prompts_dir=ctx.prompts_dir,
         router_mode=ctx.router_mode,
@@ -165,18 +170,15 @@ def select_prompt(state: OrchestrationState, ctx: RouterContext, logger: Logger)
 
 
 def run_turn(
-    role: str,
     state: OrchestrationState,
     ctx: RouterContext,
     executor: PromptExecutor,
     logger: Logger,
 ) -> TurnResult:
-    state.expected_actor = role
     selection = select_prompt(state, ctx, logger)
     rc = executor(selection.prompt_path)
     if ctx.use_router:
         state.last_prompt = selection.selected_prompt
-        state.last_prompt_actor = role
     return TurnResult(
         state=state,
         returncode=rc,
