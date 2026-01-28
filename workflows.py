@@ -25,6 +25,12 @@ def get_workflow(name: str, *, review_every_n_cycles: int | None = None) -> Work
             WorkflowStep("main", "main.md"),
         ]
         return Workflow(name="standard", steps=steps, cycle_len=2)
+    if name == "standard2":
+        steps = [
+            WorkflowStep("supervisor", "supervisor2.md"),
+            WorkflowStep("main", "main2.md"),
+        ]
+        return Workflow(name="standard2", steps=steps, cycle_len=2)
     if name == "review_cadence":
         steps = [
             WorkflowStep("supervisor", "supervisor.md"),
@@ -32,6 +38,18 @@ def get_workflow(name: str, *, review_every_n_cycles: int | None = None) -> Work
         ]
         return Workflow(
             name="review_cadence",
+            steps=steps,
+            cycle_len=2,
+            review_every_n_cycles=review_every_n_cycles or 0,
+            review_prompt="reviewer.md",
+        )
+    if name == "review_cadence2":
+        steps = [
+            WorkflowStep("supervisor", "supervisor2.md"),
+            WorkflowStep("main", "main2.md"),
+        ]
+        return Workflow(
+            name="review_cadence2",
             steps=steps,
             cycle_len=2,
             review_every_n_cycles=review_every_n_cycles or 0,
