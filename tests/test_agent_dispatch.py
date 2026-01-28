@@ -19,17 +19,17 @@ from scripts.orchestration.config import load_config
 def test_agent_prompt_override_precedence(tmp_path: Path) -> None:
     cfg = AgentConfig(
         default_agent="auto",
-        role_map=normalize_role_map({"galph": "codex"}),
+        role_map=normalize_role_map({"supervisor": "codex"}),
         prompt_map=normalize_prompt_map({"supervisor.md": "claude"}, tmp_path),
         prompts_dir=tmp_path,
     )
-    cli_role_map = parse_agent_map("galph=claude", normalize_role_key)
+    cli_role_map = parse_agent_map("supervisor=claude", normalize_role_key)
     cli_prompt_map = parse_agent_map(
         "supervisor.md=codex",
         lambda k: canonical_prompt_key(k, tmp_path),
     )
 
-    agent = resolve_agent("galph", "supervisor.md", cfg, cli_role_map, cli_prompt_map)
+    agent = resolve_agent("supervisor", "supervisor.md", cfg, cli_role_map, cli_prompt_map)
 
     assert agent == "codex"
 
@@ -42,8 +42,8 @@ def test_agent_config_parsing(tmp_path: Path) -> None:
                 "agent:",
                 "  default: codex",
                 "  roles:",
-                "    galph: claude",
-                "    ralph: codex",
+                "    supervisor: claude",
+                "    loop: codex",
                 "  prompts:",
                 "    supervisor.md: codex",
                 "    main.md: claude",
@@ -55,32 +55,47 @@ def test_agent_config_parsing(tmp_path: Path) -> None:
     cfg = load_config(config_path=config_path, warn_missing=False)
 
     assert cfg.agent_default == "codex"
-    assert cfg.agent_roles == {"galph": "claude", "ralph": "codex"}
+    assert cfg.agent_roles == {"supervisor": "claude", "loop": "codex"}
     assert cfg.agent_prompts == {"supervisor.md": "codex", "main.md": "claude"}
 
 
 def test_agent_role_fallback(tmp_path: Path) -> None:
     cfg = AgentConfig(
         default_agent="auto",
-        role_map=normalize_role_map({"ralph": "claude"}),
+        role_map=normalize_role_map({"loop": "claude"}),
         prompt_map=normalize_prompt_map({}, tmp_path),
         prompts_dir=tmp_path,
     )
 
-    agent = resolve_agent("ralph", "main.md", cfg, {}, {})
+    agent = resolve_agent("loop", "main.md", cfg, {}, {})
 
+    assert agent == "claude"
+
+def test_role_aliases_map_to_supervisor_loop(tmp_path: Path) -> None:
+    cfg = AgentConfig(
+        default_agent="auto",
+        role_map=normalize_role_map({"supervisor": "claude", "loop": "codex"}),
+        prompt_map=normalize_prompt_map({}, tmp_path),
+        prompts_dir=tmp_path,
+    )
+    cli_role_map = parse_agent_map("galph=codex,ralph=claude", normalize_role_key)
+
+    agent = resolve_agent("galph", "main.md", cfg, cli_role_map, {})
+    assert agent == "codex"
+
+    agent = resolve_agent("ralph", "main.md", cfg, cli_role_map, {})
     assert agent == "claude"
 
 
 def test_router_prompt_drives_agent(tmp_path: Path) -> None:
     cfg = AgentConfig(
         default_agent="auto",
-        role_map=normalize_role_map({"galph": "codex"}),
+        role_map=normalize_role_map({"supervisor": "codex"}),
         prompt_map=normalize_prompt_map({"reviewer.md": "claude"}, tmp_path),
         prompts_dir=tmp_path,
     )
 
-    agent = resolve_agent("galph", "reviewer.md", cfg, {}, {})
+    agent = resolve_agent("supervisor", "reviewer.md", cfg, {}, {})
 
     assert agent == "claude"
 
@@ -88,7 +103,7 @@ def test_router_prompt_drives_agent(tmp_path: Path) -> None:
 def test_combined_uses_prompt_agent(monkeypatch, tmp_path: Path) -> None:
     cfg = AgentConfig(
         default_agent="auto",
-        role_map=normalize_role_map({"galph": "codex"}),
+        role_map=normalize_role_map({"supervisor": "codex"}),
         prompt_map=normalize_prompt_map({"reviewer.md": "claude"}, tmp_path),
         prompts_dir=tmp_path,
     )
@@ -99,7 +114,7 @@ def test_combined_uses_prompt_agent(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(agent_dispatch, "resolve_cmd", _fake_resolve_cmd)
 
     selection = select_agent_cmd(
-        "galph",
+        "supervisor",
         "reviewer.md",
         cfg,
         {},

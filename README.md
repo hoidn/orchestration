@@ -65,8 +65,8 @@ router:
 agent:
   default: auto  # auto | claude | codex
   roles:
-    galph: claude   # legacy role keys for supervisor/loop runners
-    ralph: codex
+    supervisor: claude
+    loop: codex
   prompts:
     supervisor.md: codex
     main.md: claude
@@ -158,7 +158,7 @@ Implementation lives in `scripts/orchestration/router.py` with a thin wrapper `s
 
 ## Agent Dispatch (optional)
 
-You can route different CLIs per role or per prompt. Role keys are legacy runner labels (supervisor/loop) and do not influence prompt selection. Resolution precedence:
+You can route different CLIs per role or per prompt. Role keys are runner labels (`supervisor`/`loop`) and do not influence prompt selection. Legacy `galph`/`ralph` keys are accepted as aliases. Resolution precedence:
 
 1. CLI prompt map (`--agent-prompt`)
 2. CLI role map (`--agent-role`)
@@ -171,7 +171,7 @@ Prompt keys are normalized to `.md` and matched relative to `prompts_dir` (e.g.,
 CLI usage examples:
 ```bash
 ./orchestrator.sh --mode combined --agent codex \
-  --agent-role galph=claude,ralph=codex \
+  --agent-role supervisor=claude,loop=codex \
   --agent-prompt reviewer.md=claude
 ```
 

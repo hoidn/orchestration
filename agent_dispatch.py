@@ -30,7 +30,12 @@ def normalize_agent_name(value: str | None) -> str:
 
 
 def normalize_role_key(value: str) -> str:
-    return value.strip().lower()
+    key = value.strip().lower()
+    aliases = {
+        "galph": "supervisor",
+        "ralph": "loop",
+    }
+    return aliases.get(key, key)
 
 
 def canonical_prompt_key(token: str, prompts_dir: Path) -> str:
