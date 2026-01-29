@@ -245,8 +245,6 @@ Router notes for combined mode:
 - Prompt execution heartbeat:
   - `ORCHESTRATION_PROMPT_HEARTBEAT_SECS` (default `10`) emits periodic console/log lines when a prompt produces no output.
   - Set to `0` to disable prompt heartbeats entirely.
-- Prompt timeout:
-  - `ORCHESTRATION_PROMPT_TIMEOUT_SECS` (default `0`, disabled) terminates a prompt if it runs longer than N seconds.
 - Prompt output buffering:
   - `ORCHESTRATION_PYTHONUNBUFFERED` (default `1`) exports `PYTHONUNBUFFERED=1` for agent CLIs.
   - `ORCHESTRATION_USE_STDBUF` (default `1`) wraps agent CLIs with `stdbuf -oL -eL` when available.
@@ -256,6 +254,11 @@ Router notes for combined mode:
   - `ORCHESTRATION_CLAUDE_FORCE_TTY=1` (default) wraps Claude with `script -q /dev/null -c ...` to force a TTY,
     which helps streaming output when Claude buffers on pipes.
   - `ORCHESTRATION_CODEX_JSON=1` adds `--json` to `codex exec` (JSONL events to stdout).
+  - `ORCHESTRATION_CLAUDE_SESSION_PERSIST=1` enables session persistence (default is disabled with `--no-session-persistence`).
+- PTY selection:
+  - `ORCHESTRATION_PTY_MODE=auto` (default) disables PTY for Claude (uses pipes) and keeps the default PTY behavior for other agents.
+  - `ORCHESTRATION_PTY_MODE=always` forces PTY for all agents.
+  - `ORCHESTRATION_PTY_MODE=never` disables PTY for all agents.
 - `logs/` is ignored by Git.
 
 ### Viewing recent interleaved logs

@@ -165,17 +165,20 @@ def resolve_cmd(agent: str, claude_cmd: str, codex_cmd: str) -> list[str]:
     def _claude_cmd() -> list[str] | None:
         def _fmt(path: Path | str) -> list[str]:
             quoted = str(path).replace('"', '\\"')
+            session_flag = ""
+            if not _truthy_env("ORCHESTRATION_CLAUDE_SESSION_PERSIST", "0"):
+                session_flag = " --no-session-persistence"
             if _claude_stream_json():
                 stream_script = str(stream_to_text_script()).replace('"', '\\"')
                 cmd_core = (
                     f'{_shell_preamble()}"{quoted}" -p --dangerously-skip-permissions --verbose '
-                    f'--output-format stream-json --include-partial-messages'
+                    f'--output-format stream-json --include-partial-messages{session_flag}'
                 )
                 if _claude_force_tty():
                     cmd_core = f"script -q /dev/null -c '{cmd_core}'"
                 cmd_str = f'{_shell_preamble()}{cmd_core} | {_shell_preamble()}"python" "{stream_script}"'
             else:
-                cmd_str = f'{_shell_preamble()}"{quoted}" -p --dangerously-skip-permissions --verbose --output-format text'
+                cmd_str = f'{_shell_preamble()}"{quoted}" -p --dangerously-skip-permissions --verbose --output-format text{session_flag}'
             return ["/bin/bash", "-lc", cmd_str]
 
         if claude_cmd:

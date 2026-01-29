@@ -441,7 +441,16 @@ def _run_combined(args, cfg) -> int:
                 "[agent] role=%s prompt=%s agent=%s cmd=%s"
                 % (role, prompt_key, selection.agent, " ".join(selection.cmd))
             )
-            return tee_run(selection.cmd, prompt_path, log_path)
+            pty_mode = os.getenv("ORCHESTRATION_PTY_MODE", "auto").strip().lower()
+            if pty_mode == "always":
+                use_pty = True
+            elif pty_mode == "never":
+                use_pty = False
+            elif selection.agent == "claude":
+                use_pty = False
+            else:
+                use_pty = None
+            return tee_run(selection.cmd, prompt_path, log_path, use_pty=use_pty)
 
         def _galph_exec(prompt_path: Path) -> int:
             return _exec_for("galph", prompt_path, galph_logger, galph_log)

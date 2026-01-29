@@ -373,7 +373,16 @@ def main() -> int:
             commit(f"[SYNC i={st.iteration}] step={st.step_index} status=running")
             push_to(branch_target, logp)
 
-        rc = tee_run(selection.cmd, prompt_path, iter_log)
+        pty_mode = os.getenv("ORCHESTRATION_PTY_MODE", "auto").strip().lower()
+        if pty_mode == "always":
+            use_pty = True
+        elif pty_mode == "never":
+            use_pty = False
+        elif selection.agent == "claude":
+            use_pty = False
+        else:
+            use_pty = None
+        rc = tee_run(selection.cmd, prompt_path, iter_log, use_pty=use_pty)
 
         # Auto-commit reports evidence (before stamping) — constrained by extension and size caps
         if args.auto_commit_reports and not args.no_git:

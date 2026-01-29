@@ -526,7 +526,16 @@ def main() -> int:
                 logp(f"ERROR: {e}")
                 print(f"[supervisor] ERROR: {e}")
                 return 2
-            rc = tee_run(selection.cmd, prompt_file, iter_log_path)
+            pty_mode = os.getenv("ORCHESTRATION_PTY_MODE", "auto").strip().lower()
+            if pty_mode == "always":
+                use_pty = True
+            elif pty_mode == "never":
+                use_pty = False
+            elif selection.agent == "claude":
+                use_pty = False
+            else:
+                use_pty = None
+            rc = tee_run(selection.cmd, prompt_file, iter_log_path, use_pty=use_pty)
             if rc != 0:
                 return rc
         return 0
@@ -688,7 +697,16 @@ def main() -> int:
             commit(f"[SYNC i={st.iteration}] step={st.step_index} status=running")
             push_to(branch_target, logp)
 
-        rc = tee_run(selection.cmd, prompt_file, iter_log)
+        pty_mode = os.getenv("ORCHESTRATION_PTY_MODE", "auto").strip().lower()
+        if pty_mode == "always":
+            use_pty = True
+        elif pty_mode == "never":
+            use_pty = False
+        elif selection.agent == "claude":
+            use_pty = False
+        else:
+            use_pty = None
+        rc = tee_run(selection.cmd, prompt_file, iter_log, use_pty=use_pty)
 
         sha = short_head() if not args.no_git else "no-git"
 

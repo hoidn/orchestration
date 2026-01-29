@@ -55,7 +55,7 @@ def log_file(prefix: str, tmp_dir: Path = Path("tmp")) -> Path:
     return path
 
 
-def tee_run(cmd: list[str], stdin_file: Path | None, log_path: Path) -> int:
+def tee_run(cmd: list[str], stdin_file: Path | None, log_path: Path, *, use_pty: bool | None = None) -> int:
     """Run command with output tee'd to a log file using non-blocking I/O."""
     import os
     import pty
@@ -69,24 +69,18 @@ def tee_run(cmd: list[str], stdin_file: Path | None, log_path: Path) -> int:
 
         fin = open(stdin_file, "rb") if stdin_file else open("/dev/null", "rb")
         try:
-            use_pty = os.getenv("ORCHESTRATION_USE_PTY", "1").strip().lower() not in {"0", "false", "no"}
+            if use_pty is None:
+                use_pty = os.getenv("ORCHESTRATION_USE_PTY", "1").strip().lower() not in {"0", "false", "no"}
             prompt_label = str(stdin_file.name) if isinstance(stdin_file, Path) else "<stdin>"
             heartbeat_raw = os.getenv("ORCHESTRATION_PROMPT_HEARTBEAT_SECS", "10").strip()
-            timeout_raw = os.getenv("ORCHESTRATION_PROMPT_TIMEOUT_SECS", "0").strip()
             try:
                 heartbeat_secs = float(heartbeat_raw) if heartbeat_raw else 0.0
             except ValueError:
                 heartbeat_secs = 0.0
             heartbeat_secs = max(0.0, heartbeat_secs)
-            try:
-                timeout_secs = float(timeout_raw) if timeout_raw else 0.0
-            except ValueError:
-                timeout_secs = 0.0
-            timeout_secs = max(0.0, timeout_secs)
             start_ts = time.time()
             last_output = start_ts
             last_beat = start_ts
-            timed_out = False
 
             def _write_chunk(chunk: bytes) -> None:
                 nonlocal last_output
@@ -119,31 +113,6 @@ def tee_run(cmd: list[str], stdin_file: Path | None, log_path: Path) -> int:
                 flog.write(msg)
                 flog.flush()
                 last_beat = now
-
-            def _check_timeout(proc: Popen) -> None:
-                nonlocal timed_out
-                if timeout_secs <= 0 or timed_out:
-                    return
-                now = time.time()
-                if (now - start_ts) < timeout_secs:
-                    return
-                timed_out = True
-                msg = (
-                    f"[runner] timeout ({int(now - start_ts)}s elapsed) "
-                    f"prompt={prompt_label} log={log_path}; terminating\n"
-                )
-                sys.stdout.write(msg)
-                sys.stdout.flush()
-                flog.write(msg)
-                flog.flush()
-                try:
-                    proc.terminate()
-                    proc.wait(timeout=5)
-                except Exception:
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
 
             if heartbeat_secs > 0:
                 msg = f"[runner] start prompt={prompt_label} log={log_path}\n"
@@ -181,11 +150,10 @@ def tee_run(cmd: list[str], stdin_file: Path | None, log_path: Path) -> int:
                             else:
                                 break
                         _emit_heartbeat()
-                        _check_timeout(proc)
                 finally:
                     os.close(master_fd)
 
-                return proc.returncode if proc.returncode is not None else (124 if timed_out else 0)
+                return proc.returncode
 
             proc = Popen(cmd, stdin=fin, stdout=PIPE, stderr=PIPE, bufsize=0)
 
@@ -229,9 +197,8 @@ def tee_run(cmd: list[str], stdin_file: Path | None, log_path: Path) -> int:
                             flog.write(text)
                     break
                 _emit_heartbeat()
-                _check_timeout(proc)
 
-            return proc.returncode if proc.returncode is not None else (124 if timed_out else 0)
+            return proc.returncode
         finally:
             fin.close()
 
