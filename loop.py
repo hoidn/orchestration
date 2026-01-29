@@ -20,7 +20,7 @@ from .state import OrchestrationState
 from .git_bus import safe_pull, add, commit, push_to, short_head, has_unpushed_commits, assert_on_branch, current_branch, push_with_rebase
 from .autocommit import autocommit_reports
 from .config import load_config
-from .runner import RouterContext, log_file, run_router_prompt, select_prompt, tee_run
+from .runner import RouterContext, log_file, resolve_use_pty, run_router_prompt, select_prompt, tee_run
 from .router import resolve_prompt_path
 
 
@@ -373,15 +373,7 @@ def main() -> int:
             commit(f"[SYNC i={st.iteration}] step={st.step_index} status=running")
             push_to(branch_target, logp)
 
-        pty_mode = os.getenv("ORCHESTRATION_PTY_MODE", "auto").strip().lower()
-        if pty_mode == "always":
-            use_pty = True
-        elif pty_mode == "never":
-            use_pty = False
-        elif selection.agent == "claude":
-            use_pty = False
-        else:
-            use_pty = None
+        use_pty = resolve_use_pty(selection.agent)
         rc = tee_run(selection.cmd, prompt_path, iter_log, use_pty=use_pty)
 
         # Auto-commit reports evidence (before stamping) — constrained by extension and size caps

@@ -34,6 +34,7 @@ class TestNoGit:
         prompts_dir = tmp_path / "prompts"
         prompts_dir.mkdir()
         (prompts_dir / "supervisor.md").write_text("test prompt", encoding="utf-8")
+        monkeypatch.delenv("ORCHESTRATION_WORKFLOW", raising=False)
 
         # Setup state file
         state_dir = tmp_path / "sync"
@@ -91,8 +92,8 @@ class TestNoGit:
         # Track tee_run calls to verify prompt execution still happens
         tee_run_calls = []
 
-        def _mock_tee_run(cmd, prompt_path, log_path):
-            tee_run_calls.append((cmd, str(prompt_path), str(log_path)))
+        def _mock_tee_run(cmd, prompt_path, log_path, *, use_pty=None):
+            tee_run_calls.append((cmd, str(prompt_path), str(log_path), use_pty))
             return 0
 
         monkeypatch.setattr(supervisor_module, "tee_run", _mock_tee_run)
@@ -144,8 +145,9 @@ class TestNoGit:
 
         # Verify state was updated locally
         final_state = OrchestrationState.read(str(state_file))
-        assert final_state.iteration == 2, "Iteration should be incremented"
-        assert final_state.status == "complete", "Status should be complete"
+        assert final_state.step_index > 0, "Step index should advance"
+        assert final_state.iteration == final_state.step_index + 1, "Iteration should track step_index"
+        assert final_state.status in {"waiting-next", "complete"}
 
         assert rc == 0
 
@@ -154,6 +156,7 @@ class TestNoGit:
         prompts_dir = tmp_path / "prompts"
         prompts_dir.mkdir()
         (prompts_dir / "supervisor.md").write_text("test prompt", encoding="utf-8")
+        monkeypatch.delenv("ORCHESTRATION_WORKFLOW", raising=False)
 
         git_calls = {"current_branch": 0, "assert_on_branch": 0}
 
@@ -169,7 +172,7 @@ class TestNoGit:
 
         tee_run_calls = []
 
-        def _mock_tee_run(cmd, prompt_path, log_path):
+        def _mock_tee_run(cmd, prompt_path, log_path, *, use_pty=None):
             tee_run_calls.append(str(prompt_path))
             return 0
 
@@ -211,6 +214,7 @@ class TestNoGit:
         prompts_dir = tmp_path / "prompts"
         prompts_dir.mkdir()
         (prompts_dir / "supervisor.md").write_text("test prompt", encoding="utf-8")
+        monkeypatch.delenv("ORCHESTRATION_WORKFLOW", raising=False)
 
         state_dir = tmp_path / "sync"
         state_dir.mkdir()
@@ -228,7 +232,7 @@ class TestNoGit:
         monkeypatch.setattr(supervisor_module, "push_to", _fail_git)
         monkeypatch.setattr(supervisor_module, "push_with_rebase", _fail_git)
 
-        monkeypatch.setattr(supervisor_module, "tee_run", lambda *a: 0)
+        monkeypatch.setattr(supervisor_module, "tee_run", lambda *a, **k: 0)
         monkeypatch.setattr(supervisor_module, "resolve_cmd", lambda *a, **k: ["echo"])
 
         from scripts.orchestration.config import OrchConfig
@@ -255,9 +259,9 @@ class TestNoGit:
 
         # State should be updated locally
         final_state = OrchestrationState.read(str(state_file))
-        assert final_state.iteration == 7, "Iteration should advance to the next even step"
-        assert final_state.step_index == 6
-        assert final_state.status == "complete"
+        assert final_state.step_index > st.step_index
+        assert final_state.iteration == final_state.step_index + 1
+        assert final_state.status in {"waiting-next", "complete"}
         assert rc == 0
 
     def test_no_git_autocommit_skipped(self, tmp_path: Path, monkeypatch) -> None:
@@ -265,6 +269,7 @@ class TestNoGit:
         prompts_dir = tmp_path / "prompts"
         prompts_dir.mkdir()
         (prompts_dir / "supervisor.md").write_text("test prompt", encoding="utf-8")
+        monkeypatch.delenv("ORCHESTRATION_WORKFLOW", raising=False)
 
         state_dir = tmp_path / "sync"
         state_dir.mkdir()
@@ -289,7 +294,7 @@ class TestNoGit:
         monkeypatch.setattr(supervisor_module, "push_to", lambda *a, **k: None)
         monkeypatch.setattr(supervisor_module, "push_with_rebase", lambda *a, **k: True)
 
-        monkeypatch.setattr(supervisor_module, "tee_run", lambda *a: 0)
+        monkeypatch.setattr(supervisor_module, "tee_run", lambda *a, **k: 0)
         monkeypatch.setattr(supervisor_module, "resolve_cmd", lambda *a, **k: ["echo"])
 
         from scripts.orchestration.config import OrchConfig

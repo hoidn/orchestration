@@ -132,13 +132,6 @@ def resolve_cmd(agent: str, claude_cmd: str, codex_cmd: str) -> list[str]:
     def _claude_stream_json() -> bool:
         return _truthy_env("ORCHESTRATION_CLAUDE_STREAM_JSON", "0")
 
-    def _claude_force_tty() -> bool:
-        if not _claude_stream_json():
-            return False
-        if os.getenv("ORCHESTRATION_CLAUDE_FORCE_TTY", "1").strip().lower() in {"0", "false", "no"}:
-            return False
-        return shutil.which("script") is not None
-
     def _codex_json() -> bool:
         return _truthy_env("ORCHESTRATION_CODEX_JSON", "0")
 
@@ -174,8 +167,6 @@ def resolve_cmd(agent: str, claude_cmd: str, codex_cmd: str) -> list[str]:
                     f'{_shell_preamble()}"{quoted}" -p --dangerously-skip-permissions --verbose '
                     f'--output-format stream-json --include-partial-messages{session_flag}'
                 )
-                if _claude_force_tty():
-                    cmd_core = f"script -q /dev/null -c '{cmd_core}'"
                 cmd_str = f'{_shell_preamble()}{cmd_core} | {_shell_preamble()}"python" "{stream_script}"'
             else:
                 cmd_str = f'{_shell_preamble()}"{quoted}" -p --dangerously-skip-permissions --verbose --output-format text{session_flag}'

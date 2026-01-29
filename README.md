@@ -251,8 +251,6 @@ Router notes for combined mode:
 - Prompt streaming:
   - `ORCHESTRATION_CLAUDE_STREAM_JSON=1` runs Claude with `--output-format stream-json` + `--include-partial-messages`,
     piping through `scripts/orchestration/claude_stream_to_text.py` for immediate text streaming.
-  - `ORCHESTRATION_CLAUDE_FORCE_TTY=1` (default) wraps Claude with `script -q /dev/null -c ...` to force a TTY,
-    which helps streaming output when Claude buffers on pipes.
   - `ORCHESTRATION_CODEX_JSON=1` adds `--json` to `codex exec` (JSONL events to stdout).
   - `ORCHESTRATION_CLAUDE_SESSION_PERSIST=1` enables session persistence (default is disabled with `--no-session-persistence`).
 - PTY selection:

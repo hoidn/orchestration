@@ -14,6 +14,7 @@ from scripts.orchestration.orchestrator import (
     run_combined_iteration,
 )
 from scripts.orchestration.config import OrchConfig
+from scripts.orchestration.runner import resolve_use_pty
 from scripts.orchestration.state import OrchestrationState
 
 
@@ -711,3 +712,9 @@ def test_role_mode_forwards_loop_prompt(monkeypatch) -> None:
     assert captured["value"] == "custom_main.md"
     assert called["supervisor"] is False
 
+
+def test_resolve_use_pty_auto_avoids_claude() -> None:
+    assert resolve_use_pty("claude", "auto") is False
+    assert resolve_use_pty("codex", "auto") is None
+    assert resolve_use_pty("claude", "always") is True
+    assert resolve_use_pty("claude", "never") is False

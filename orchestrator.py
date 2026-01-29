@@ -25,7 +25,7 @@ from .config import load_config
 from .git_bus import assert_on_branch, current_branch, short_head
 from .loop import main as loop_main
 from .router import resolve_prompt_path
-from .runner import RouterContext, run_router_prompt, run_turn, tee_run
+from .runner import RouterContext, resolve_use_pty, run_router_prompt, run_turn, tee_run
 from .state import OrchestrationState
 from .supervisor import main as supervisor_main
 
@@ -441,15 +441,7 @@ def _run_combined(args, cfg) -> int:
                 "[agent] role=%s prompt=%s agent=%s cmd=%s"
                 % (role, prompt_key, selection.agent, " ".join(selection.cmd))
             )
-            pty_mode = os.getenv("ORCHESTRATION_PTY_MODE", "auto").strip().lower()
-            if pty_mode == "always":
-                use_pty = True
-            elif pty_mode == "never":
-                use_pty = False
-            elif selection.agent == "claude":
-                use_pty = False
-            else:
-                use_pty = None
+            use_pty = resolve_use_pty(selection.agent)
             return tee_run(selection.cmd, prompt_path, log_path, use_pty=use_pty)
 
         def _galph_exec(prompt_path: Path) -> int:

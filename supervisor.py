@@ -23,7 +23,7 @@ from .state import OrchestrationState
 from .git_bus import safe_pull, add, commit, push_to, short_head, assert_on_branch, current_branch, has_unpushed_commits, push_with_rebase
 from .autocommit import autocommit_reports
 from .config import load_config
-from .runner import RouterContext, log_file, run_router_prompt, select_prompt, tee_run
+from .runner import RouterContext, log_file, resolve_use_pty, run_router_prompt, select_prompt, tee_run
 from .router import resolve_prompt_path
 
 
@@ -526,15 +526,7 @@ def main() -> int:
                 logp(f"ERROR: {e}")
                 print(f"[supervisor] ERROR: {e}")
                 return 2
-            pty_mode = os.getenv("ORCHESTRATION_PTY_MODE", "auto").strip().lower()
-            if pty_mode == "always":
-                use_pty = True
-            elif pty_mode == "never":
-                use_pty = False
-            elif selection.agent == "claude":
-                use_pty = False
-            else:
-                use_pty = None
+            use_pty = resolve_use_pty(selection.agent)
             rc = tee_run(selection.cmd, prompt_file, iter_log_path, use_pty=use_pty)
             if rc != 0:
                 return rc
@@ -697,15 +689,7 @@ def main() -> int:
             commit(f"[SYNC i={st.iteration}] step={st.step_index} status=running")
             push_to(branch_target, logp)
 
-        pty_mode = os.getenv("ORCHESTRATION_PTY_MODE", "auto").strip().lower()
-        if pty_mode == "always":
-            use_pty = True
-        elif pty_mode == "never":
-            use_pty = False
-        elif selection.agent == "claude":
-            use_pty = False
-        else:
-            use_pty = None
+        use_pty = resolve_use_pty(selection.agent)
         rc = tee_run(selection.cmd, prompt_file, iter_log, use_pty=use_pty)
 
         sha = short_head() if not args.no_git else "no-git"

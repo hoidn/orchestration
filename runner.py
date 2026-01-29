@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from dataclasses import dataclass
 from datetime import datetime
@@ -39,6 +40,18 @@ class TurnResult:
     prompt_path: Path
     selected_prompt: str
     decision: Optional[RouterDecision] = None
+
+
+def resolve_use_pty(agent: str, pty_mode: str | None = None) -> bool | None:
+    mode = (pty_mode or os.getenv("ORCHESTRATION_PTY_MODE", "auto")).strip().lower()
+    if mode == "always":
+        return True
+    if mode == "never":
+        return False
+    # auto: avoid PTY for Claude to prevent hangs on buffered CLIs
+    if agent.strip().lower() == "claude":
+        return False
+    return None
 
 
 def log_file(prefix: str, tmp_dir: Path = Path("tmp")) -> Path:
