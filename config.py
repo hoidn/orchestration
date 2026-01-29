@@ -363,6 +363,13 @@ def stream_to_text_script() -> Path:
     return Path(__file__).parent / "claude_stream_to_text.py"
 
 
+def stream_runner_script() -> Path:
+    """
+    Return path to claude_stream_runner.py relative to this module.
+    """
+    return Path(__file__).parent / "claude_stream_runner.py"
+
+
 def claude_cli_default() -> Optional[Path]:
     """
     Return the default Claude CLI path, searching in order:

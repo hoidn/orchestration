@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping
 
-from .config import claude_cli_default, stream_to_text_script
+from .config import claude_cli_default, stream_runner_script
 
 
 @dataclass(frozen=True)
@@ -162,14 +162,25 @@ def resolve_cmd(agent: str, claude_cmd: str, codex_cmd: str) -> list[str]:
             if not _truthy_env("ORCHESTRATION_CLAUDE_SESSION_PERSIST", "0"):
                 session_flag = " --no-session-persistence"
             if _claude_stream_json():
-                stream_script = str(stream_to_text_script()).replace('"', '\\"')
-                cmd_core = (
-                    f'{_shell_preamble()}"{quoted}" -p --dangerously-skip-permissions --verbose '
-                    f'--output-format stream-json --include-partial-messages{session_flag}'
-                )
-                cmd_str = f'{_shell_preamble()}{cmd_core} | {_shell_preamble()}"python" "{stream_script}"'
-            else:
-                cmd_str = f'{_shell_preamble()}"{quoted}" -p --dangerously-skip-permissions --verbose --output-format text{session_flag}'
+                stream_runner = str(stream_runner_script())
+                cmd = [
+                    "python",
+                    stream_runner,
+                    "--claude",
+                    str(path),
+                    "--",
+                    "-p",
+                    "--dangerously-skip-permissions",
+                    "--verbose",
+                    "--output-format",
+                    "stream-json",
+                    "--include-partial-messages",
+                ]
+                if session_flag:
+                    cmd.append(session_flag.strip())
+                return _wrap_cmd_list(cmd)
+
+            cmd_str = f'{_shell_preamble()}"{quoted}" -p --dangerously-skip-permissions --verbose --output-format text{session_flag}'
             return ["/bin/bash", "-lc", cmd_str]
 
         if claude_cmd:
