@@ -245,6 +245,8 @@ Router notes for combined mode:
 - Prompt execution heartbeat:
   - `ORCHESTRATION_PROMPT_HEARTBEAT_SECS` (default `10`) emits periodic console/log lines when a prompt produces no output.
   - Set to `0` to disable prompt heartbeats entirely.
+- Prompt timeout:
+  - `ORCHESTRATION_PROMPT_TIMEOUT_SECS` (default `0`, disabled) terminates a prompt if it runs longer than N seconds.
 - Prompt output buffering:
   - `ORCHESTRATION_PYTHONUNBUFFERED` (default `1`) exports `PYTHONUNBUFFERED=1` for agent CLIs.
   - `ORCHESTRATION_USE_STDBUF` (default `1`) wraps agent CLIs with `stdbuf -oL -eL` when available.
