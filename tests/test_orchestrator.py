@@ -718,3 +718,51 @@ def test_resolve_use_pty_auto_avoids_claude() -> None:
     assert resolve_use_pty("codex", "auto") is None
     assert resolve_use_pty("claude", "always") is True
     assert resolve_use_pty("claude", "never") is False
+
+
+def test_apply_start_prompt_updates_state_forward(tmp_path: Path) -> None:
+    state = OrchestrationState(workflow_name="standard2", step_index=1, iteration=2, status="idle")
+
+    orchestrator_module._apply_start_prompt(
+        state,
+        prompt="supervisor2.md",
+        workflow_name="standard2",
+        review_every_n_cycles=0,
+        prompts_dir=tmp_path / "prompts",
+    )
+
+    assert state.step_index == 2
+    assert state.iteration == 3
+    assert state.expected_step is None
+
+
+def test_apply_start_prompt_keeps_matching_step(tmp_path: Path) -> None:
+    state = OrchestrationState(workflow_name="standard2", step_index=4, iteration=5, status="idle")
+
+    orchestrator_module._apply_start_prompt(
+        state,
+        prompt="supervisor2.md",
+        workflow_name="standard2",
+        review_every_n_cycles=0,
+        prompts_dir=tmp_path / "prompts",
+    )
+
+    assert state.step_index == 4
+    assert state.iteration == 5
+
+
+def test_apply_start_prompt_unknown_prompt_errors(tmp_path: Path) -> None:
+    state = OrchestrationState(workflow_name="standard2", step_index=0, iteration=1, status="idle")
+
+    try:
+        orchestrator_module._apply_start_prompt(
+            state,
+            prompt="unknown.md",
+            workflow_name="standard2",
+            review_every_n_cycles=0,
+            prompts_dir=tmp_path / "prompts",
+        )
+    except ValueError as exc:
+        assert "unknown.md" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for unknown prompt")

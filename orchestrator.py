@@ -28,6 +28,7 @@ from .router import resolve_prompt_path
 from .runner import RouterContext, resolve_use_pty, run_router_prompt, run_turn, tee_run
 from .state import OrchestrationState
 from .supervisor import main as supervisor_main
+from .workflows import get_workflow
 
 
 Logger = Callable[[str], None]
@@ -221,6 +222,36 @@ def _apply_role_prompt_override(role: str) -> None:
             os.environ["LOOP_PROMPT"] = value
 
 
+def _apply_start_prompt(
+    state: OrchestrationState,
+    *,
+    prompt: str,
+    workflow_name: str,
+    review_every_n_cycles: int,
+    prompts_dir: Path,
+) -> None:
+    prompt_key = canonical_prompt_key(prompt, prompts_dir)
+    workflow = get_workflow(workflow_name, review_every_n_cycles=review_every_n_cycles)
+    matches = [
+        idx
+        for idx, step in enumerate(workflow.steps)
+        if canonical_prompt_key(step.prompt, prompts_dir) == prompt_key
+    ]
+    if not matches:
+        raise ValueError(
+            f"Unknown start prompt '{prompt_key}' for workflow '{workflow.name}'."
+        )
+    desired_index = matches[0]
+    base_index = state.step_index % workflow.cycle_len
+    delta = (desired_index - base_index) % workflow.cycle_len
+    if delta:
+        state.step_index += delta
+    state.iteration = state.step_index + 1
+    state.expected_step = None
+    state.last_prompt = None
+    state.workflow_name = workflow.name
+
+
 def build_combined_contexts(
     *,
     prompts_dir: Path,
@@ -340,6 +371,18 @@ def _run_combined(args, cfg) -> int:
     state = OrchestrationState.read(str(state_file)) if state_file.exists() else OrchestrationState()
     if args.workflow:
         state.workflow_name = args.workflow
+    if args.start_prompt:
+        try:
+            _apply_start_prompt(
+                state,
+                prompt=args.start_prompt,
+                workflow_name=state.workflow_name,
+                review_every_n_cycles=args.workflow_review_every_n,
+                prompts_dir=cfg.prompts_dir,
+            )
+        except ValueError as exc:
+            print(f"[orchestrator] ERROR: {exc}")
+            return 2
 
     try:
         cli_role_map = parse_agent_map(args.agent_role, normalize_role_key)
@@ -507,6 +550,12 @@ def main() -> int:
     ap.add_argument("--prompt-supervisor", type=str, default=os.getenv("SUPERVISOR_PROMPT", cfg.supervisor_prompt))
     ap.add_argument("--prompt-main", type=str, default=os.getenv("LOOP_PROMPT", cfg.main_prompt))
     ap.add_argument("--prompt-reviewer", type=str, default=os.getenv("REVIEWER_PROMPT", cfg.reviewer_prompt))
+    ap.add_argument(
+        "--start-prompt",
+        type=str,
+        default=os.getenv("ORCHESTRATION_START_PROMPT", ""),
+        help="Start combined mode on a specific prompt and update state accordingly.",
+    )
     ap.add_argument("--use-router", dest="use_router", action="store_true")
     ap.add_argument("--no-router", dest="use_router", action="store_false")
     ap.set_defaults(use_router=cfg.router_enabled)
