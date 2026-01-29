@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping
 
-from .config import claude_cli_default
+from .config import claude_cli_default, stream_to_text_script
 
 
 @dataclass(frozen=True)
@@ -118,10 +118,64 @@ def resolve_agent(
 def resolve_cmd(agent: str, claude_cmd: str, codex_cmd: str) -> list[str]:
     agent_norm = normalize_agent_name(agent)
 
+    def _truthy_env(name: str, default: str = "0") -> bool:
+        return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _use_unbuffered() -> bool:
+        return os.getenv("ORCHESTRATION_PYTHONUNBUFFERED", "1").strip().lower() not in {"0", "false", "no"}
+
+    def _use_stdbuf() -> bool:
+        if os.getenv("ORCHESTRATION_USE_STDBUF", "1").strip().lower() in {"0", "false", "no"}:
+            return False
+        return shutil.which("stdbuf") is not None
+
+    def _claude_stream_json() -> bool:
+        return _truthy_env("ORCHESTRATION_CLAUDE_STREAM_JSON", "0")
+
+    def _claude_force_tty() -> bool:
+        if not _claude_stream_json():
+            return False
+        if os.getenv("ORCHESTRATION_CLAUDE_FORCE_TTY", "1").strip().lower() in {"0", "false", "no"}:
+            return False
+        return shutil.which("script") is not None
+
+    def _codex_json() -> bool:
+        return _truthy_env("ORCHESTRATION_CODEX_JSON", "0")
+
+    def _wrap_cmd_list(cmd: list[str]) -> list[str]:
+        prefix: list[str] = []
+        if _use_unbuffered():
+            prefix += ["env", "PYTHONUNBUFFERED=1"]
+        if _use_stdbuf():
+            prefix += ["stdbuf", "-oL", "-eL"]
+        if prefix:
+            return prefix + cmd
+        return cmd
+
+    def _shell_preamble() -> str:
+        parts: list[str] = []
+        if _use_unbuffered():
+            parts.append("PYTHONUNBUFFERED=1")
+        if _use_stdbuf():
+            parts.append("stdbuf -oL -eL")
+        if not parts:
+            return ""
+        return " ".join(parts) + " "
+
     def _claude_cmd() -> list[str] | None:
         def _fmt(path: Path | str) -> list[str]:
             quoted = str(path).replace('"', '\\"')
-            cmd_str = f'"{quoted}" -p --dangerously-skip-permissions --verbose --output-format text'
+            if _claude_stream_json():
+                stream_script = str(stream_to_text_script()).replace('"', '\\"')
+                cmd_core = (
+                    f'{_shell_preamble()}"{quoted}" -p --dangerously-skip-permissions --verbose '
+                    f'--output-format stream-json --include-partial-messages'
+                )
+                if _claude_force_tty():
+                    cmd_core = f"script -q /dev/null -c '{cmd_core}'"
+                cmd_str = f'{_shell_preamble()}{cmd_core} | {_shell_preamble()}"python" "{stream_script}"'
+            else:
+                cmd_str = f'{_shell_preamble()}"{quoted}" -p --dangerously-skip-permissions --verbose --output-format text'
             return ["/bin/bash", "-lc", cmd_str]
 
         if claude_cmd:
@@ -141,7 +195,7 @@ def resolve_cmd(agent: str, claude_cmd: str, codex_cmd: str) -> list[str]:
         codex_bin = shutil.which(codex_cmd) or codex_cmd
         if not codex_bin:
             return None
-        return [
+        cmd = [
             codex_bin,
             "exec",
             "-m",
@@ -150,6 +204,9 @@ def resolve_cmd(agent: str, claude_cmd: str, codex_cmd: str) -> list[str]:
             "model_reasoning_effort=high",
             "--dangerously-bypass-approvals-and-sandbox",
         ]
+        if _codex_json():
+            cmd.append("--json")
+        return _wrap_cmd_list(cmd)
 
     if agent_norm == "claude":
         cmd = _claude_cmd()

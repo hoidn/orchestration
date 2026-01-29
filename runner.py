@@ -60,6 +60,7 @@ def tee_run(cmd: list[str], stdin_file: Path | None, log_path: Path) -> int:
     import os
     import pty
     import select
+    import time
 
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with open(log_path, "a", encoding="utf-8") as flog:
@@ -69,14 +70,54 @@ def tee_run(cmd: list[str], stdin_file: Path | None, log_path: Path) -> int:
         fin = open(stdin_file, "rb") if stdin_file else open("/dev/null", "rb")
         try:
             use_pty = os.getenv("ORCHESTRATION_USE_PTY", "1").strip().lower() not in {"0", "false", "no"}
+            prompt_label = str(stdin_file.name) if isinstance(stdin_file, Path) else "<stdin>"
+            heartbeat_raw = os.getenv("ORCHESTRATION_PROMPT_HEARTBEAT_SECS", "10").strip()
+            try:
+                heartbeat_secs = float(heartbeat_raw) if heartbeat_raw else 0.0
+            except ValueError:
+                heartbeat_secs = 0.0
+            heartbeat_secs = max(0.0, heartbeat_secs)
+            start_ts = time.time()
+            last_output = start_ts
+            last_beat = start_ts
 
             def _write_chunk(chunk: bytes) -> None:
+                nonlocal last_output
                 if not chunk:
                     return
+                last_output = time.time()
                 text = chunk.decode("utf-8", errors="replace")
                 sys.stdout.write(text)
                 sys.stdout.flush()
                 flog.write(text)
+                flog.flush()
+
+            def _emit_heartbeat(force: bool = False) -> None:
+                nonlocal last_beat
+                if heartbeat_secs <= 0:
+                    return
+                now = time.time()
+                if not force:
+                    if (now - last_output) < heartbeat_secs:
+                        return
+                    if (now - last_beat) < heartbeat_secs:
+                        return
+                elapsed = int(now - start_ts)
+                msg = (
+                    f"[runner] still running ({elapsed}s elapsed) "
+                    f"prompt={prompt_label} log={log_path}\n"
+                )
+                sys.stdout.write(msg)
+                sys.stdout.flush()
+                flog.write(msg)
+                flog.flush()
+                last_beat = now
+
+            if heartbeat_secs > 0:
+                msg = f"[runner] start prompt={prompt_label} log={log_path}\n"
+                sys.stdout.write(msg)
+                sys.stdout.flush()
+                flog.write(msg)
                 flog.flush()
 
             if use_pty:
@@ -107,6 +148,7 @@ def tee_run(cmd: list[str], stdin_file: Path | None, log_path: Path) -> int:
                                 _write_chunk(chunk)
                             else:
                                 break
+                        _emit_heartbeat()
                 finally:
                     os.close(master_fd)
 
@@ -133,6 +175,7 @@ def tee_run(cmd: list[str], stdin_file: Path | None, log_path: Path) -> int:
                 if stderr_fd in readable and proc.stderr:
                     chunk = proc.stderr.read(4096)
                     if chunk:
+                        last_output = time.time()
                         text = chunk.decode("utf-8", errors="replace")
                         sys.stderr.write(text)
                         sys.stderr.flush()
@@ -152,6 +195,7 @@ def tee_run(cmd: list[str], stdin_file: Path | None, log_path: Path) -> int:
                             sys.stderr.flush()
                             flog.write(text)
                     break
+                _emit_heartbeat()
 
             return proc.returncode
         finally:

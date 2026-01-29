@@ -242,6 +242,18 @@ Router notes for combined mode:
 - Supervisor console options:
   - `--verbose`: print state changes to console and log
   - `--heartbeat-secs N`: periodic heartbeat lines while polling
+- Prompt execution heartbeat:
+  - `ORCHESTRATION_PROMPT_HEARTBEAT_SECS` (default `10`) emits periodic console/log lines when a prompt produces no output.
+  - Set to `0` to disable prompt heartbeats entirely.
+- Prompt output buffering:
+  - `ORCHESTRATION_PYTHONUNBUFFERED` (default `1`) exports `PYTHONUNBUFFERED=1` for agent CLIs.
+  - `ORCHESTRATION_USE_STDBUF` (default `1`) wraps agent CLIs with `stdbuf -oL -eL` when available.
+- Prompt streaming:
+  - `ORCHESTRATION_CLAUDE_STREAM_JSON=1` runs Claude with `--output-format stream-json` + `--include-partial-messages`,
+    piping through `scripts/orchestration/claude_stream_to_text.py` for immediate text streaming.
+  - `ORCHESTRATION_CLAUDE_FORCE_TTY=1` (default) wraps Claude with `script -q /dev/null -c ...` to force a TTY,
+    which helps streaming output when Claude buffers on pipes.
+  - `ORCHESTRATION_CODEX_JSON=1` adds `--json` to `codex exec` (JSONL events to stdout).
 - `logs/` is ignored by Git.
 
 ### Viewing recent interleaved logs
