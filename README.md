@@ -251,6 +251,8 @@ Router notes for combined mode:
 - Prompt streaming:
   - `ORCHESTRATION_CLAUDE_STREAM_JSON=1` runs Claude with `--output-format stream-json` + `--include-partial-messages`,
     using `scripts/orchestration/claude_stream_runner.py` to emit text and terminate after `message_stop`.
+  - `ORCHESTRATION_ENGINEER_SUMMARY_PATH` (default `engineer_summary.md`) lets the stream runner exit once the
+    engineer summary file is created or updated (fallback if stream-json parsing misses `message_stop`).
   - `ORCHESTRATION_CODEX_JSON=1` adds `--json` to `codex exec` (JSONL events to stdout).
   - `ORCHESTRATION_CLAUDE_SESSION_PERSIST=1` enables session persistence (default is disabled with `--no-session-persistence`).
 - PTY selection:
